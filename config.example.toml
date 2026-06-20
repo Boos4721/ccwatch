@@ -1,0 +1,106 @@
+# ccwatch 默认配置 — agent 会话监控器
+#
+# 监控 tmux 里的 AI agent CLI 会话(Claude Code / Codex / Gemini / ...),
+# 检测状态转移(干完 / 卡住 / 空闲),只在变化时播报。
+#
+# 状态分类基于 tmux pane 末尾文本的正则匹配。每个 agent 一个 [[profiles]],
+# 加新 agent = 加一段 profile,不改代码。
+#
+# 优先级:working > waiting > idle(先匹配 working,命中即定;依次 waiting、idle;
+# 都不中 = unknown,不播报)。
+
+# ---- 全局 ----
+[general]
+# 监控哪些 tmux 会话:按会话名前缀过滤(空 = 全部会话)
+session_prefixes = ["cc", "codex", "gemini", "agent", "probe"]
+# 抓 pane 末尾多少行做分类
+capture_lines = 60
+# daemon 模式轮询间隔(秒)
+poll_interval_secs = 30
+# 状态文件路径(记录上次每个会话的状态,用于检测转移)
+state_file = "~/.config/ccwatch/state.json"
+
+# ---- 投递(daemon 模式自投递;once 模式只打印 stdout 给 Hermes cron) ----
+[delivery]
+# none = 只打印 stdout(配合 Hermes no_agent cron);telegram = 直连 Bot API
+mode = "none"
+# telegram 模式需要:
+# bot_token = "123456:ABC..."
+# chat_id = "7435622194"
+# 可选代理(国内访问 telegram 需要)
+# proxy = "http://proxy.kto:7890"
+
+# ---- 播报规则:哪些状态转移要播报 ----
+[transitions]
+# 干完了(working/waiting/unknown → idle)
+notify_done = true
+# 卡住了(任意 → waiting)
+notify_waiting = true
+# 开始干(idle/waiting → working)—— 默认不报,免噪音
+notify_working = false
+# 会话消失
+notify_gone = true
+# 新会话首次见到且已是 waiting
+notify_new_waiting = true
+
+# ==========================================================================
+# Agent Profiles —— 真实 pane 特征(2026-06 实测 claude/codex/gemini 抓取)
+# ==========================================================================
+
+# ---- Claude Code ----
+# WORKING: 底部状态栏 "esc to interrupt"
+# WAITING: "Enter to select" / "❯ 1." 菜单 / "Do you want" / "(y/n)"
+# IDLE:    "for agents" 状态栏 + 空 "❯" 提示符,无 interrupt
+[[profiles]]
+name = "claude"
+# 会话名匹配(正则,可选;空则靠 pane 内容嗅探)
+session_match = "^cc"
+# pane 内容嗅探(用于会话名认不出时,确认这是 claude code)
+detect = "bypass permissions|for agents|claude"
+working = ["esc to interrupt"]
+waiting = [
+  "Enter to select",
+  "Tab/Arrow keys",
+  "Do you want",
+  "Would you like",
+  "\\(y/n\\)",
+  "❯\\s*1\\.",
+  "Press Enter to continue",
+]
+idle = ["for agents", "(?m)^❯\\s*$", "new task\\? /clear"]
+
+# ---- Codex (OpenAI) ----
+# WORKING: "Working (Ns • esc to interrupt)"
+# WAITING: "Press enter to confirm" / "› 1." 菜单 / "(Use Enter to select)"
+# IDLE:    "› " 输入框 + 底部 "gpt-... · ~/path" 状态行,无 Working
+[[profiles]]
+name = "codex"
+session_match = "^codex"
+detect = "OpenAI Codex|gpt-5|/skills to list"
+working = ["esc to interrupt", "Working \\(\\d+s"]
+waiting = [
+  "Press enter to confirm",
+  "Use Enter to select",
+  "›\\s*1\\.",
+  "Trust all and continue",
+  "Review hooks",
+  "\\(y/n\\)",
+]
+# codex idle:有输入框 › 提示 + 底部模型状态行,但没有 Working
+idle = ["(?m)^›\\s*$", "Use /skills to list", "·\\s*~/"]
+
+# ---- Gemini CLI ----
+# 注:实测账号地区不支持登录,只抓到 auth 菜单(WAITING 态)。
+# working/idle 规则按 gemini-cli 公开 UI 推测,待实际可登录后校准(TODO)。
+[[profiles]]
+name = "gemini"
+session_match = "^gemini"
+detect = "Gemini CLI|Gemini API Key|geminicli"
+working = ["esc to interrupt", "esc to cancel"]
+waiting = [
+  "Use Enter to select",
+  "How would you like to authenticate",
+  "●\\s*1\\.",
+  "\\(Use Enter to select\\)",
+]
+idle = ["(?m)^>\\s*$", "Type your message", "for shortcuts"]

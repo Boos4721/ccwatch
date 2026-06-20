@@ -1,0 +1,40 @@
+[package]
+name = "ccwatch"
+version = "0.1.0"
+edition = "2021"
+description = "Universal agent session watchdog — monitor Claude Code / Codex / Gemini / etc tmux sessions and broadcast state transitions (done / stuck / idle)."
+license = "MIT"
+repository = "https://github.com/Boos4721/ccwatch"
+
+[lib]
+name = "ccwatch"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ccwatch"
+path = "src/main.rs"
+
+[dependencies]
+# CLI parsing
+clap = { version = "4", features = ["derive"] }
+# config + state serialization
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+serde_json = "1"
+# regex rule matching for pane classification
+regex = "1"
+# error handling
+anyhow = "1"
+# daemon mode async + Telegram delivery
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "process"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+# logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
