@@ -1,118 +1,114 @@
 # ccwatch
 
-通用 **AI agent 会话监控器**。监控 tmux 里跑的 agent CLI(Claude Code / Codex / Gemini / 以后更多),
-检测每个会话的状态(干活中 `working` / 卡住等输入 `waiting` / 空闲待命 `idle`),
-**只在状态发生转移时**播报一条消息。
+> [中文文档](README.zh-CN.md)
 
-背景:同时开多个 cc/codex 会话干活,不想反复手动问"进度?",也受够了 agent 干完/卡住不吭声。
+A universal **AI agent session monitor**. Watches agent CLIs running in tmux (Claude Code / Codex / Gemini / more to come), classifies each session's state (`working` / `waiting` for input / `idle`), and reports a message **only when the state transitions**.
 
-- 纯 Rust 单二进制,零运行时依赖。
-- 配置驱动:加新 agent = 加一段 `[[profiles]]`,不改代码。
-- 双模式:`once`(给 cron)/ `daemon`(常驻自投递)/ `check`(调试)。
+Why: when you run several cc/codex sessions at once, you don't want to keep manually asking "progress?", and you're tired of agents going silent when they finish or get stuck.
 
-## 构建
+- Pure Rust, single binary, zero runtime dependencies.
+- Config-driven: add a new agent = add one `[[profiles]]` block, no code change.
+- Three modes: `once` (for cron) / `daemon` (resident, self-delivering) / `check` (debug).
+
+## Build
 
 ```bash
 cargo build --release
-# 产物:target/release/ccwatch(单二进制)
+# Output: target/release/ccwatch (single binary)
 ```
 
-## 配置
+## Configure
 
-复制示例配置到默认位置(或用 `--config` 指定任意路径):
+Copy the example config to the default location (or point anywhere with `--config`):
 
 ```bash
 mkdir -p ~/.config/ccwatch
 cp config.example.toml ~/.config/ccwatch/config.toml
 ```
 
-配置查找顺序:`--config <PATH>` > `~/.config/ccwatch/config.toml` > `./config.example.toml`。
+Config lookup order: `--config <PATH>` > `~/.config/ccwatch/config.toml` > `./config.example.toml`.
 
-关键项见 `config.example.toml` 注释。摘要:
+See `config.example.toml` comments for details. Summary:
 
-- `[general]` — 监控哪些会话(`session_prefixes`)、抓多少行(`capture_lines`)、
-  轮询间隔(`poll_interval_secs`)、状态文件路径(`state_file`,支持 `~`)。
-- `[delivery]` — `none`(只打印 stdout)或 `telegram`(填 `bot_token` / `chat_id`,可选 `proxy`)。
-- `[transitions]` — 哪些转移要播报的开关。
-- `[[profiles]]` — 每个 agent 的 pane 特征正则。
+- `[general]` — which sessions to watch (`session_prefixes`), how many lines to capture (`capture_lines`), poll interval (`poll_interval_secs`), state file path (`state_file`, supports `~`).
+- `[delivery]` — `none` (print to stdout only) or `telegram` (set `bot_token` / `chat_id`, optional `proxy`).
+- `[transitions]` — switches for which transitions to report.
+- `[[profiles]]` — per-agent pane-feature regexes.
 
-## 三种模式
+## Three modes
 
-### `ccwatch once` —— 跑一遍,打印 stdout(给 cron)
+### `ccwatch once` — run once, print to stdout (for cron)
 
-扫描一遍,把**状态转移事件**打印到 stdout;无转移则**完全静默**(空输出)。
-首遍运行只建基线,不播报。适合挂定时任务:
+Scans once, prints **state-transition events** to stdout; **stays completely silent** (empty output) if there's no transition. The first run only builds a baseline and doesn't report. Ideal for scheduled jobs:
 
 ```bash
-ccwatch once   # 无变化时 stdout 为空
+ccwatch once   # empty stdout when nothing changed
 ```
 
-### `ccwatch daemon` —— 常驻循环,自投递
+### `ccwatch daemon` — resident loop, self-delivering
 
-按 `poll_interval_secs` 轮询,自己投递(`delivery.mode` 决定打印 stdout 还是发 Telegram):
+Polls every `poll_interval_secs`, delivers on its own (`delivery.mode` decides print-to-stdout vs send-to-Telegram):
 
 ```bash
-ccwatch daemon                 # 用配置里的间隔
-ccwatch daemon --interval 15   # 覆盖为 15s
+ccwatch daemon                 # use the interval from config
+ccwatch daemon --interval 15   # override to 15s
 ```
 
-投递失败时本轮不写状态文件,下一轮自动重试(不会漏报)。
+On delivery failure it skips writing the state file for that round and retries next round (no missed reports).
 
-### `ccwatch check` —— 列出当前会话 + 状态(调试)
+### `ccwatch check` — list current sessions + states (debug)
 
 ```bash
 ccwatch check
 # SESSION          PROFILE  STATE    CONTEXT
-# ccA              claude   idle     C-2 系统监控 API
+# ccA              claude   idle     C-2 monitoring API
 # ccD              claude   working
 ```
 
-## 状态分类逻辑
+## State classification logic
 
-对每个匹配的 tmux 会话:
+For each matching tmux session:
 
-1. `tmux capture-pane -t <session> -p -S -<capture_lines>` 抓 pane 末尾文本。
-2. 选 profile:先按 `session_match` 正则匹配会话名;认不出再用 `detect` 正则嗅探 pane 内容。都不中跳过。
-3. 按优先级匹配:**working > waiting > idle**。每个状态一组正则,任一命中即该状态;都不中 = `unknown`。
+1. `tmux capture-pane -t <session> -p -S -<capture_lines>` grabs the tail of the pane text.
+2. Pick a profile: first match the session name against the `session_match` regex; if unrecognized, sniff pane content with the `detect` regex. Skip the session if neither matches.
+3. Match by priority: **working > waiting > idle**. Each state is a set of regexes; any hit means that state; none means `unknown`.
 
-> codex 和 claude 的 working 都含 `esc to interrupt`,codex idle 则有 `›` 空输入框——
-> 靠 working 规则的优先级 + idle 的 `(?m)^›\s*$` 区分。
+> Both codex and claude `working` contain `esc to interrupt`, while codex idle has an empty `›` input box — disambiguated by the priority of the working rules plus idle's `(?m)^›\s*$`.
 
-## 转移播报规则
+## Transition reporting rules
 
-| 转移 | 播报 | 开关 |
+| Transition | Report | Switch |
 |------|------|------|
-| working/waiting/unknown → idle | `✅ <session> 干完了,空闲待命` | `notify_done` |
-| 任意 → waiting | `⏸ <session> 卡住了,在等你拍板` | `notify_waiting` |
-| idle/waiting → working | `▶ <session> 开始干了`(默认关) | `notify_working` |
-| 会话消失 | `⚫ <session> 会话已结束` | `notify_gone` |
-| 新会话首次见到且已 waiting | `⏸ <session> 一上来就在等你拍板` | `notify_new_waiting` |
+| working/waiting/unknown → idle | `✅ <session> done, idle` | `notify_done` |
+| any → waiting | `⏸ <session> stuck, waiting on you` | `notify_waiting` |
+| idle/waiting → working | `▶ <session> started` (off by default) | `notify_working` |
+| session gone | `⚫ <session> session ended` | `notify_gone` |
+| new session, first seen already waiting | `⏸ <session> waiting on you from the start` | `notify_new_waiting` |
 
-播报带一句上下文:waiting 抓最后的菜单/提问行,idle 抓最近的 `●`/`✻`/`✔` 总结行,截断到 ~120 字符。
+Reports carry one line of context: for waiting, grabs the last menu/question line; for idle, grabs the most recent `●`/`✻`/`✔` summary line; truncated to ~120 chars.
 
-## 加新 agent profile
+## Adding a new agent profile
 
-不用改代码,在配置里加一段:
+No code change — add a block to the config:
 
 ```toml
 [[profiles]]
 name = "myagent"
-session_match = "^my"               # 会话名正则(可选)
-detect = "MyAgent banner|某关键词"   # pane 内容嗅探(会话名认不出时用)
-working = ["esc to interrupt"]      # 任一命中即 working
+session_match = "^my"               # session-name regex (optional)
+detect = "MyAgent banner|keyword"   # pane-content sniff (when name unrecognized)
+working = ["esc to interrupt"]      # any hit = working
 waiting = ["Press Enter", "\\(y/n\\)"]
 idle = ["(?m)^>\\s*$"]
 ```
 
-用 `ccwatch check` 看分类对不对,必要时调正则。
+Use `ccwatch check` to verify classification and tune the regexes if needed.
 
-## 挂 Hermes / cron
+## Hooking into Hermes / cron
 
-`once` 模式空输出即静默,天然适合 cron / Hermes no_agent 触发:
+`once` mode's empty-output-means-silent behavior is naturally suited to cron / Hermes no_agent triggers:
 
 ```cron
 * * * * * /path/to/ccwatch once --config ~/.config/ccwatch/config.toml
 ```
 
-有转移时 stdout 才有内容,由上层(cron 邮件 / Hermes)转发给你。
-要直连 Telegram 则改用 `daemon` + `delivery.mode = "telegram"`。
+stdout has content only when there's a transition, forwarded to you by the upper layer (cron mail / Hermes). For a direct Telegram connection, use `daemon` + `delivery.mode = "telegram"`.
