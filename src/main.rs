@@ -82,6 +82,26 @@ enum Commands {
     },
     /// 列出当前所有匹配会话 + 状态(调试)。
     Check,
+    /// 往指定会话发一条指令(双向控制)。
+    /// 抓屏模式:tmux send-keys 文本 + 单独 Enter 提交;协议模式:经 CodexClient 发一个 turn。
+    Say {
+        /// 目标会话名(抓屏)或会话标签(协议)。
+        session: String,
+        /// 要发送的消息文本。
+        message: String,
+        /// 发送轨道:screen(tmux send-keys)/ protocol(CodexClient)。
+        #[arg(long, default_value = "screen")]
+        mode: String,
+        /// 协议模式:codex 审批策略。
+        #[arg(long, default_value = "never")]
+        approval_policy: String,
+        /// 协议模式:codex sandbox。
+        #[arg(long, default_value = "read-only")]
+        sandbox: String,
+        /// 协议模式:turn 超时(秒)。
+        #[arg(long, default_value_t = 120)]
+        timeout: u64,
+    },
     /// 协议模式探针:以 ACP/MCP client 身份拉起 agent,跑一个 turn,
     /// 实时打印从协议事件流读到的权威状态(验证用)。
     AcpProbe {
@@ -188,6 +208,14 @@ async fn main() -> Result<()> {
             .await
         }
         Commands::Check => run_check(cli.config),
+        Commands::Say {
+            session,
+            message,
+            mode,
+            approval_policy,
+            sandbox,
+            timeout,
+        } => run_say(&session, &message, &mode, &approval_policy, &sandbox, timeout).await,
         Commands::AcpProbe {
             agent,
             prompt,
@@ -294,7 +322,7 @@ async fn run_once_protocol(
             Duration::from_secs(timeout_secs),
             |ev| {
                 if let Some(sig) = ev.signal {
-                    if let Some(event) = tracker.observe(label, sig.state, sig.context) {
+                    if let Some(event) = tracker.observe(label, sig.state, sig.context, sig.wait_kind) {
                         events.push(event);
                     }
                 }
@@ -465,7 +493,7 @@ async fn run_daemon_protocol(
             Duration::from_secs(timeout_secs),
             |ev| {
                 if let Some(sig) = ev.signal {
-                    if let Some(event) = tracker.observe(label, sig.state, sig.context) {
+                    if let Some(event) = tracker.observe(label, sig.state, sig.context, sig.wait_kind) {
                         let _ = tx.send(event);
                     }
                 }
@@ -502,6 +530,52 @@ fn run_check(cli_path: Option<PathBuf>) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// say:往指定会话发一条指令。
+async fn run_say(
+    session: &str,
+    message: &str,
+    mode_str: &str,
+    approval_policy: &str,
+    sandbox: &str,
+    timeout_secs: u64,
+) -> Result<()> {
+    let mode = Mode::parse(mode_str)?;
+    match mode {
+        Mode::Screen => {
+            // 抓屏:tmux send-keys 文本 + 单独 Enter 提交(可靠两步)。
+            ccwatch::tmux::send_text(session, message)?;
+            println!("已发送到 tmux 会话 {}(文本+Enter): {}", session, message);
+            Ok(())
+        }
+        Mode::Protocol => {
+            // 协议:用 CodexClient 把消息当一个 turn 发给 codex,打印回应。
+            let mut client = acp::CodexClient::spawn(None).context("拉起 codex mcp-server 失败")?;
+            let mut last = String::new();
+            client
+                .run_turn(
+                    message,
+                    approval_policy,
+                    sandbox,
+                    Duration::from_secs(timeout_secs),
+                    |ev| {
+                        if let Some(sig) = ev.signal {
+                            if let Some(c) = sig.context {
+                                last = c;
+                            }
+                        }
+                    },
+                )
+                .await?;
+            client.shutdown().await;
+            println!("已经由协议发送到 {} 并完成一个 turn。回应: {}", session, last);
+            Ok(())
+        }
+        Mode::Auto => {
+            anyhow::bail!("say 不支持 --mode auto,请显式指定 screen 或 protocol。")
+        }
+    }
 }
 
 /// acp-probe:协议模式验证。拉起 agent,跑一个 turn,实时打印权威状态流。

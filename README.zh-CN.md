@@ -66,6 +66,15 @@ ccwatch check
 # ccD              claude   working
 ```
 
+### `ccwatch say` —— 往会话发指令（双向控制）
+
+```bash
+ccwatch say ccA "继续推进 B 计划"               # 抓屏:tmux send-keys + Enter
+ccwatch say codex-a "修一下测试" --mode protocol
+```
+
+抓屏模式是可靠两步:`send-keys -l` 先把字面文本塞进输入行,再单独发一次 `send-keys Enter` 提交(tmux 经常不补 Enter 就不提交)。协议模式把消息当一个 turn 经 CodexClient 发给 Codex。
+
 ## 状态分类逻辑
 
 对每个匹配的 tmux 会话：

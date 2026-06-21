@@ -66,6 +66,15 @@ ccwatch check
 # ccD              claude   working
 ```
 
+### `ccwatch say` — send a command into a session (two-way control)
+
+```bash
+ccwatch say ccA "continue with plan B"          # screen: tmux send-keys + Enter
+ccwatch say codex-a "fix the test" --mode protocol
+```
+
+Screen mode is a reliable two-step: `send-keys -l` types the literal text, then a separate `send-keys Enter` submits it (tmux often won't submit without the standalone Enter). Protocol mode sends the message to Codex as one turn via the client.
+
 ## State classification logic
 
 For each matching tmux session:
