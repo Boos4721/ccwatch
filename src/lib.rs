@@ -7,6 +7,7 @@ pub mod classify;
 pub mod config;
 pub mod hooks;
 pub mod notify;
+pub mod orchestrate;
 pub mod screen;
 pub mod state;
 pub mod status;

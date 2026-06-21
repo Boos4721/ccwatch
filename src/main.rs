@@ -6,7 +6,9 @@
 //!   check  列出当前所有匹配会话 + 识别到的状态(调试)。
 
 use anyhow::{Context, Result};
-use ccwatch::{acp, auto_answer, backend, classify, config, hooks, notify, state, status, watch};
+use ccwatch::{
+    acp, auto_answer, backend, classify, config, hooks, notify, orchestrate, state, status, watch,
+};
 use clap::{Parser, Subcommand};
 use config::{expand_tilde, Config, EffectiveMode, Mode};
 use std::path::PathBuf;
@@ -84,6 +86,8 @@ enum Commands {
     Check,
     /// 一屏总览所有被监控会话的当前状态 + 上次转移多久前(tty 下着色)。
     Status,
+    /// 把队列任务投给空闲会话(跨会话编排,需 [orchestration] enabled)。
+    Dispatch,
     /// 往指定会话发一条指令(双向控制)。
     /// 抓屏模式:tmux send-keys 文本 + 单独 Enter 提交;协议模式:经 CodexClient 发一个 turn。
     Say {
@@ -211,6 +215,7 @@ async fn main() -> Result<()> {
         }
         Commands::Check => run_check(cli.config),
         Commands::Status => run_status(cli.config),
+        Commands::Dispatch => run_dispatch(cli.config),
         Commands::Say {
             session,
             message,
@@ -579,6 +584,63 @@ fn run_status(cli_path: Option<PathBuf>) -> Result<()> {
 
     let use_color = std::io::stdout().is_terminal();
     println!("{}", status::render(&rows, now, use_color));
+    Ok(())
+}
+
+/// dispatch:把队列任务投给空闲会话(跨会话编排)。
+fn run_dispatch(cli_path: Option<PathBuf>) -> Result<()> {
+    let (cfg, classifier) = load(cli_path)?;
+    let orch = &cfg.orchestration;
+
+    if !orch.enabled {
+        println!("(orchestration 未启用:在 config 设 [orchestration] enabled = true)");
+        return Ok(());
+    }
+
+    // 只投给 session_match 命中的 idle 会话(可选)。
+    let session_re = match &orch.session_match {
+        Some(p) => Some(
+            regex::Regex::new(p)
+                .with_context(|| format!("orchestration.session_match 正则无效: {}", p))?,
+        ),
+        None => None,
+    };
+
+    let mut queue = orchestrate::TaskQueue::load(orch)?;
+    if queue.is_empty() {
+        println!("(任务队列为空,无可派发任务)");
+        return Ok(());
+    }
+
+    // 找当前 idle 会话。
+    let be = backend::make_backend(&cfg.general.backend);
+    let snaps = watch::scan_snapshots(&cfg, &classifier, be.as_ref())?;
+    let mut dispatched = 0usize;
+    for snap in &snaps {
+        if snap.state != classify::State::Idle {
+            continue;
+        }
+        if let Some(re) = &session_re {
+            if !re.is_match(&snap.session) {
+                continue;
+            }
+        }
+        let task = match queue.pop_front() {
+            Some(t) => t,
+            None => break, // 队列空了。
+        };
+        // 投递:先发任务文本,再发回车提交。
+        be.send_keys(&snap.session, &task)?;
+        be.send_keys(&snap.session, "Enter")?;
+        tracing::info!("dispatch: 把任务投给 {} -> {}", snap.session, task);
+        println!("→ {}: {}", snap.session, task);
+        dispatched += 1;
+    }
+
+    queue.persist()?;
+    if dispatched == 0 {
+        println!("(没有符合条件的 idle 会话,队列保持不变)");
+    }
     Ok(())
 }
 
