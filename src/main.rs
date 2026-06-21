@@ -8,7 +8,7 @@
 use anyhow::{Context, Result};
 use ccwatch::{
     acp, auto_answer, backend, classify, config, hooks, notify, orchestrate, record, state, status,
-    watch,
+    tui, watch,
 };
 use clap::{Parser, Subcommand};
 use config::{expand_tilde, Config, EffectiveMode, Mode};
@@ -91,6 +91,8 @@ enum Commands {
     Dispatch,
     /// 打印每会话今日各状态时长 + waiting 次数汇总(读状态文件)。
     Report,
+    /// 实时总览面板(一屏表格,按间隔刷新,q 退出)。
+    Tui,
     /// 抓某会话当前 pane,提取候选特征行,打印建议的正则(不改 config)。
     Record {
         /// 目标会话名。
@@ -229,6 +231,7 @@ async fn main() -> Result<()> {
         Commands::Status => run_status(cli.config),
         Commands::Dispatch => run_dispatch(cli.config),
         Commands::Report => run_report(cli.config),
+        Commands::Tui => run_tui(cli.config),
         Commands::Record { session, label } => run_record(cli.config, session, label),
         Commands::Say {
             session,
@@ -705,6 +708,13 @@ fn run_report(cli_path: Option<PathBuf>) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// tui:实时总览面板。
+fn run_tui(cli_path: Option<PathBuf>) -> Result<()> {
+    let (cfg, classifier) = load(cli_path)?;
+    let be = backend::make_backend(&cfg.general.backend);
+    tui::run(&cfg, &classifier, be.as_ref())
 }
 
 /// say:往指定会话发一条指令。
