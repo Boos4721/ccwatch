@@ -109,6 +109,14 @@ pub fn scan_once(
             .sessions
             .insert(snap.session.clone(), snap.state.as_str().to_string());
         new_store.stuck.insert(snap.session.clone(), meta);
+
+        // 转移时刻:状态真变(或首见)记 now,否则沿用旧值,供 status 视图显示。
+        let changed = if prev_state != Some(snap.state) {
+            now
+        } else {
+            prev.changed_at.get(&snap.session).copied().unwrap_or(now)
+        };
+        new_store.changed_at.insert(snap.session.clone(), changed);
     }
 
     // 2) 上次记过、这次没分类出来的会话:
@@ -121,10 +129,13 @@ pub fn scan_once(
             continue;
         }
         if live.iter().any(|l| l == sess) {
-            // 还活着,只是这一帧没认出来:沿用旧状态 + 卡住元数据。
+            // 还活着,只是这一帧没认出来:沿用旧状态 + 卡住元数据 + 转移时刻。
             new_store.sessions.insert(sess.clone(), last.clone());
             if let Some(m) = prev.stuck.get(sess) {
                 new_store.stuck.insert(sess.clone(), m.clone());
+            }
+            if let Some(t) = prev.changed_at.get(sess) {
+                new_store.changed_at.insert(sess.clone(), *t);
             }
         } else if cfg.transitions.notify_gone {
             events.push(Event::Gone {

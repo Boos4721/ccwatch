@@ -8,6 +8,15 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
 
+/// 当前 unix 秒(墙钟)。
+fn now_unix() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 /// 持久化的状态文件结构:会话名 -> 上次状态字符串。
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct StateStore {
@@ -17,6 +26,9 @@ pub struct StateStore {
     /// 会话 -> 卡住检测元数据(新增,旧状态文件缺这段时默认空,向后兼容)。
     #[serde(default)]
     pub stuck: BTreeMap<String, StuckMeta>,
+    /// 会话 -> 上次状态转移的 unix 秒(status 视图显示"多久前转的";向后兼容默认空)。
+    #[serde(default)]
+    pub changed_at: BTreeMap<String, u64>,
 }
 
 impl StateStore {
@@ -172,6 +184,8 @@ pub struct TransitionTracker {
     last: BTreeMap<String, State>,
     /// 卡住元数据(从磁盘带入、原样带出;协议轨道卡住检测后续接入由此承载)。
     stuck: BTreeMap<String, StuckMeta>,
+    /// 上次转移时刻(unix 秒);status 视图用。
+    changed_at: BTreeMap<String, u64>,
 }
 
 impl TransitionTracker {
@@ -181,6 +195,7 @@ impl TransitionTracker {
             transitions,
             last: BTreeMap::new(),
             stuck: BTreeMap::new(),
+            changed_at: BTreeMap::new(),
         }
     }
 
@@ -195,6 +210,7 @@ impl TransitionTracker {
             transitions,
             last,
             stuck: store.stuck.clone(),
+            changed_at: store.changed_at.clone(),
         }
     }
 
@@ -209,6 +225,10 @@ impl TransitionTracker {
     ) -> Option<Event> {
         let prev = self.last.get(session).copied();
         let ev = detect_transition(session, prev, cur, &context, wait_kind, &self.transitions);
+        // 状态真正变化(或首见)时记录转移时刻,供 status 视图显示。
+        if prev != Some(cur) {
+            self.changed_at.insert(session.to_string(), now_unix());
+        }
         self.last.insert(session.to_string(), cur);
         ev
     }
@@ -223,6 +243,7 @@ impl TransitionTracker {
                 .map(|(k, v)| (k.clone(), v.as_str().to_string()))
                 .collect(),
             stuck: self.stuck.clone(),
+            changed_at: self.changed_at.clone(),
         }
     }
 }

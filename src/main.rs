@@ -6,7 +6,7 @@
 //!   check  列出当前所有匹配会话 + 识别到的状态(调试)。
 
 use anyhow::{Context, Result};
-use ccwatch::{acp, classify, config, notify, state, watch};
+use ccwatch::{acp, classify, config, notify, state, status, watch};
 use clap::{Parser, Subcommand};
 use config::{expand_tilde, Config, EffectiveMode, Mode};
 use std::path::PathBuf;
@@ -82,6 +82,8 @@ enum Commands {
     },
     /// 列出当前所有匹配会话 + 状态(调试)。
     Check,
+    /// 一屏总览所有被监控会话的当前状态 + 上次转移多久前(tty 下着色)。
+    Status,
     /// 往指定会话发一条指令(双向控制)。
     /// 抓屏模式:tmux send-keys 文本 + 单独 Enter 提交;协议模式:经 CodexClient 发一个 turn。
     Say {
@@ -208,6 +210,7 @@ async fn main() -> Result<()> {
             .await
         }
         Commands::Check => run_check(cli.config),
+        Commands::Status => run_status(cli.config),
         Commands::Say {
             session,
             message,
@@ -529,6 +532,43 @@ fn run_check(cli_path: Option<PathBuf>) -> Result<()> {
             ctx
         );
     }
+    Ok(())
+}
+
+/// status:一屏总览。实时 capture 当前状态 + 从 state_file 读上次转移时刻与卡住旗标。
+fn run_status(cli_path: Option<PathBuf>) -> Result<()> {
+    use std::io::IsTerminal;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let (cfg, classifier) = load(cli_path)?;
+    let snaps = watch::scan_snapshots(&cfg, &classifier)?;
+    let store = state::StateStore::load(&cfg.state_file_path()).unwrap_or_default();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let rows: Vec<status::StatusRow> = snaps
+        .iter()
+        .map(|s| {
+            // 卡住旗标:state_file 里该会话 stuck 元数据已 reported 即视为卡住。
+            let stuck = store
+                .stuck
+                .get(&s.session)
+                .map(|m| m.reported)
+                .unwrap_or(false);
+            status::StatusRow {
+                session: s.session.clone(),
+                state: s.state,
+                wait_kind: s.wait_kind,
+                stuck,
+                changed_at: store.changed_at.get(&s.session).copied(),
+            }
+        })
+        .collect();
+
+    let use_color = std::io::stdout().is_terminal();
+    println!("{}", status::render(&rows, now, use_color));
     Ok(())
 }
 
