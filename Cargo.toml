@@ -25,8 +25,8 @@ serde_json = "1"
 regex = "1"
 # error handling
 anyhow = "1"
-# daemon mode async + Telegram delivery
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "process"] }
+# daemon mode async + ACP/MCP stdio + Telegram delivery
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "process", "io-util"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 # logging
 tracing = "0.1"

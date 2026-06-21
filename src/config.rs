@@ -174,3 +174,91 @@ pub fn expand_tilde(path: &str) -> PathBuf {
     }
     PathBuf::from(path)
 }
+
+/// 运行模式:抓屏 / 协议 / 自动择优。
+///
+/// 双轨并存的选择开关。`auto` 优先协议(权威),协议不可用时回退抓屏。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// 抓屏:tmux capture-pane + 正则(零侵入,监控已裸跑的会话)。
+    Screen,
+    /// 协议:以 ACP/MCP client 拉起 agent,读权威事件流。
+    Protocol,
+    /// 自动:协议可用走协议,否则回退抓屏。
+    Auto,
+}
+
+/// `auto` 解析后实际落到的轨道(只会是 Screen 或 Protocol)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EffectiveMode {
+    Screen,
+    Protocol,
+}
+
+impl Mode {
+    /// 从命令行字符串解析。
+    pub fn parse(s: &str) -> Result<Mode> {
+        match s.to_ascii_lowercase().as_str() {
+            "screen" => Ok(Mode::Screen),
+            "protocol" => Ok(Mode::Protocol),
+            "auto" => Ok(Mode::Auto),
+            other => anyhow::bail!("未知 --mode `{}`(可选:screen/protocol/auto)", other),
+        }
+    }
+
+    /// 结合"协议是否可用"敲定实际轨道。
+    /// - screen → 始终抓屏。
+    /// - protocol → 始终协议(可用性由调用方另行校验并报错)。
+    /// - auto → 协议可用则协议,否则抓屏。
+    pub fn resolve(self, protocol_available: bool) -> EffectiveMode {
+        match self {
+            Mode::Screen => EffectiveMode::Screen,
+            Mode::Protocol => EffectiveMode::Protocol,
+            Mode::Auto => {
+                if protocol_available {
+                    EffectiveMode::Protocol
+                } else {
+                    EffectiveMode::Screen
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod mode_tests {
+    use super::*;
+
+    #[test]
+    fn parse_known_modes() {
+        assert_eq!(Mode::parse("screen").unwrap(), Mode::Screen);
+        assert_eq!(Mode::parse("protocol").unwrap(), Mode::Protocol);
+        assert_eq!(Mode::parse("auto").unwrap(), Mode::Auto);
+        // 大小写不敏感。
+        assert_eq!(Mode::parse("AUTO").unwrap(), Mode::Auto);
+    }
+
+    #[test]
+    fn parse_unknown_mode_errors() {
+        assert!(Mode::parse("bogus").is_err());
+    }
+
+    #[test]
+    fn screen_always_resolves_screen() {
+        assert_eq!(Mode::Screen.resolve(true), EffectiveMode::Screen);
+        assert_eq!(Mode::Screen.resolve(false), EffectiveMode::Screen);
+    }
+
+    #[test]
+    fn protocol_always_resolves_protocol() {
+        assert_eq!(Mode::Protocol.resolve(true), EffectiveMode::Protocol);
+        // 可用性由调用方另行校验报错;resolve 本身只反映"想走协议"。
+        assert_eq!(Mode::Protocol.resolve(false), EffectiveMode::Protocol);
+    }
+
+    #[test]
+    fn auto_prefers_protocol_then_falls_back() {
+        assert_eq!(Mode::Auto.resolve(true), EffectiveMode::Protocol);
+        assert_eq!(Mode::Auto.resolve(false), EffectiveMode::Screen);
+    }
+}
