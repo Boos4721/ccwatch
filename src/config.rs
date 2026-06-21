@@ -17,6 +17,12 @@ pub struct Config {
     pub transitions: Transitions,
     #[serde(default)]
     pub profiles: Vec<Profile>,
+    /// 自动应答规则(默认空,且每条默认禁用)。
+    #[serde(default)]
+    pub auto_answer: Vec<AutoAnswer>,
+    /// 跨会话编排(默认禁用)。
+    #[serde(default)]
+    pub orchestration: Orchestration,
 }
 
 /// 全局设置。
@@ -37,6 +43,11 @@ pub struct General {
     /// 「卡住」阈值(秒):working 但内容持续无变化超过此值即疑似卡住。
     #[serde(default = "default_stuck_threshold")]
     pub stuck_threshold_secs: u64,
+    /// 终端复用器后端:tmux(默认)或 screen(GNU screen)。
+    /// 注意:这与 `--mode screen`(抓屏轨道)是两个维度——这里指底层用 tmux 还是
+    /// GNU screen 抓屏/发键,`--mode` 指抓屏 vs 协议。
+    #[serde(default = "default_backend")]
+    pub backend: String,
 }
 
 impl Default for General {
@@ -47,8 +58,13 @@ impl Default for General {
             poll_interval_secs: default_poll_interval(),
             state_file: default_state_file(),
             stuck_threshold_secs: default_stuck_threshold(),
+            backend: default_backend(),
         }
     }
+}
+
+fn default_backend() -> String {
+    "tmux".to_string()
 }
 
 fn default_capture_lines() -> u32 {
@@ -162,6 +178,49 @@ pub struct Profile {
     /// WAITING 子类型:等菜单/方向键选择的特征(可选)。
     #[serde(default)]
     pub waiting_menu: Vec<String>,
+}
+
+/// 自动应答规则(命中 pane 正则时发按键)。默认每条禁用。
+#[derive(Debug, Clone, Deserialize)]
+pub struct AutoAnswer {
+    /// 限定 profile(可选;空则任意 profile 都可触发)。
+    #[serde(default)]
+    pub profile: Option<String>,
+    /// 匹配 pane 内容的正则。
+    pub r#match: String,
+    /// 要发的按键(如 "Enter"、"1"、"y")。
+    pub send: String,
+    /// 是否启用(默认 false,必须显式开)。
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+/// 跨会话编排:空闲会话自动领取队列任务。默认禁用。
+#[derive(Debug, Clone, Deserialize)]
+pub struct Orchestration {
+    /// 是否启用(默认 false)。
+    #[serde(default)]
+    pub enabled: bool,
+    /// 只把任务投给会话名匹配此正则的 idle 会话(可选;空则任意 idle 会话)。
+    #[serde(default)]
+    pub session_match: Option<String>,
+    /// 内联任务队列(作为初始种子;有 queue_file 时以文件为准)。
+    #[serde(default)]
+    pub task_queue: Vec<String>,
+    /// 队列文件路径(每行一个任务,支持 `~`;出队后改写)。
+    #[serde(default)]
+    pub queue_file: Option<String>,
+}
+
+impl Default for Orchestration {
+    fn default() -> Self {
+        Orchestration {
+            enabled: false,
+            session_match: None,
+            task_queue: Vec::new(),
+            queue_file: None,
+        }
+    }
 }
 
 impl Config {

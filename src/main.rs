@@ -6,7 +6,7 @@
 //!   check  列出当前所有匹配会话 + 识别到的状态(调试)。
 
 use anyhow::{Context, Result};
-use ccwatch::{acp, classify, config, notify, state, status, watch};
+use ccwatch::{acp, auto_answer, backend, classify, config, notify, state, status, watch};
 use clap::{Parser, Subcommand};
 use config::{expand_tilde, Config, EffectiveMode, Mode};
 use std::path::PathBuf;
@@ -277,7 +277,10 @@ async fn run_once_screen(cli_path: Option<PathBuf>) -> Result<()> {
     let state_path = cfg.state_file_path();
     let prev = state::StateStore::load(&state_path)?;
 
-    let (events, new_store) = watch::scan_once(&cfg, &classifier, &prev)?;
+    let answerer = auto_answer::AutoAnswerer::from_rules(&cfg.auto_answer)?;
+    let be = backend::make_backend(&cfg.general.backend);
+    let (events, new_store) =
+        watch::scan_once(&cfg, &classifier, &prev, Some(&answerer), be.as_ref())?;
 
     let notifier = notify::Notifier::from_delivery(&cfg.delivery)?;
     notifier.deliver(&events).await?;
@@ -398,6 +401,8 @@ async fn run_daemon_screen(
     let state_path = cfg.state_file_path();
     let interval = interval_override.unwrap_or(cfg.general.poll_interval_secs);
     let notifier = notify::Notifier::from_delivery(&cfg.delivery)?;
+    let answerer = auto_answer::AutoAnswerer::from_rules(&cfg.auto_answer)?;
+    let be = backend::make_backend(&cfg.general.backend);
 
     tracing::info!(
         "ccwatch daemon 启动(抓屏):轮询间隔 {}s,投递={},状态文件={}",
@@ -417,7 +422,7 @@ async fn run_daemon_screen(
                 state::StateStore::default()
             }
         };
-        match watch::scan_once(&cfg, &classifier, &prev) {
+        match watch::scan_once(&cfg, &classifier, &prev, Some(&answerer), be.as_ref()) {
             Ok((events, new_store)) => {
                 if let Err(e) = notifier.deliver(&events).await {
                     tracing::warn!("投递失败,本轮不写状态(下轮重试): {}", e);
@@ -514,7 +519,8 @@ async fn run_daemon_protocol(
 /// check:列出当前所有匹配会话 + 状态。
 fn run_check(cli_path: Option<PathBuf>) -> Result<()> {
     let (cfg, classifier) = load(cli_path)?;
-    let snaps = watch::scan_snapshots(&cfg, &classifier)?;
+    let be = backend::make_backend(&cfg.general.backend);
+    let snaps = watch::scan_snapshots(&cfg, &classifier, be.as_ref())?;
 
     if snaps.is_empty() {
         println!("(没有匹配的 agent 会话)");
@@ -541,7 +547,8 @@ fn run_status(cli_path: Option<PathBuf>) -> Result<()> {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     let (cfg, classifier) = load(cli_path)?;
-    let snaps = watch::scan_snapshots(&cfg, &classifier)?;
+    let be = backend::make_backend(&cfg.general.backend);
+    let snaps = watch::scan_snapshots(&cfg, &classifier, be.as_ref())?;
     let store = state::StateStore::load(&cfg.state_file_path()).unwrap_or_default();
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)

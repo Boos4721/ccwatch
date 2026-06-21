@@ -1,10 +1,10 @@
 //! 核心循环:扫描 → 分类 → diff → 产出事件。once 和 daemon 共用。
 
+use crate::backend::{filter_by_prefix, Backend};
 use crate::classify::{Classification, Classifier, State};
 use crate::config::Config;
 use crate::state::{detect_transition, Event, StateStore};
 use crate::stuck;
-use crate::tmux;
 use anyhow::Result;
 
 /// 一个会话的当前快照(给 check 调试用)。
@@ -17,14 +17,20 @@ pub struct SessionSnapshot {
     pub wait_kind: Option<crate::classify::WaitKind>,
     /// 规整后内容签名(卡住检测用;剥数字抗 spinner/计时器噪音)。
     pub content_sig: u64,
+    /// pane 原文(自动应答 / 录制用;check/status 可忽略)。
+    pub pane: String,
 }
 
 /// 扫描当前所有匹配会话,返回快照列表(不读写状态文件)。
-pub fn scan_snapshots(cfg: &Config, classifier: &Classifier) -> Result<Vec<SessionSnapshot>> {
-    let sessions = tmux::filter_by_prefix(tmux::list_sessions()?, &cfg.general.session_prefixes);
+pub fn scan_snapshots(
+    cfg: &Config,
+    classifier: &Classifier,
+    backend: &dyn Backend,
+) -> Result<Vec<SessionSnapshot>> {
+    let sessions = filter_by_prefix(backend.list_sessions()?, &cfg.general.session_prefixes);
     let mut snaps = Vec::new();
     for s in sessions {
-        let pane = match tmux::capture_pane(&s, cfg.general.capture_lines) {
+        let pane = match backend.capture_pane(&s, cfg.general.capture_lines) {
             Ok(p) => p,
             Err(_) => continue, // 会话刚消失等,跳过。
         };
@@ -42,6 +48,7 @@ pub fn scan_snapshots(cfg: &Config, classifier: &Classifier) -> Result<Vec<Sessi
                 context,
                 wait_kind,
                 content_sig: stuck::content_signature(&pane),
+                pane,
             });
         }
     }
@@ -59,18 +66,31 @@ fn now_unix() -> u64 {
 
 /// 扫描一遍:对比上次状态,产出转移事件,并返回更新后的状态库。
 /// 调用方负责把 `new_store` 写回磁盘(投递成功后)。
+///
+/// `answerer` 非空且有启用规则时,对当前 pane 做自动应答(send-keys)。
 pub fn scan_once(
     cfg: &Config,
     classifier: &Classifier,
     prev: &StateStore,
+    answerer: Option<&crate::auto_answer::AutoAnswerer>,
+    backend: &dyn Backend,
 ) -> Result<(Vec<Event>, StateStore)> {
     // 当前活着的(已过前缀过滤的)会话全集,用于判定 gone。
     let live: Vec<String> =
-        tmux::filter_by_prefix(tmux::list_sessions()?, &cfg.general.session_prefixes);
+        filter_by_prefix(backend.list_sessions()?, &cfg.general.session_prefixes);
 
-    let snaps = scan_snapshots(cfg, classifier)?;
+    let snaps = scan_snapshots(cfg, classifier, backend)?;
     let now = now_unix();
     let threshold = cfg.general.stuck_threshold_secs;
+
+    // 自动应答:在状态推进前,对命中规则的会话发按键(默认无规则则跳过)。
+    if let Some(a) = answerer {
+        if !a.is_empty() {
+            for snap in &snaps {
+                a.apply(backend, &snap.session, &snap.profile, &snap.pane);
+            }
+        }
+    }
 
     let mut events = Vec::new();
     let mut new_store = StateStore::default();
