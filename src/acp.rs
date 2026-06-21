@@ -370,6 +370,18 @@ fn server_request_kind(frame: &Value) -> String {
         .to_string()
 }
 
+/// 协议轨道是否可用:`codex` 在 PATH 上且能 `--version`。
+/// 给 `--mode auto` 择优用(可用走协议,否则回退抓屏)。
+pub fn codex_available() -> bool {
+    std::process::Command::new("codex")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
