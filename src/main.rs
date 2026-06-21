@@ -7,7 +7,8 @@
 
 use anyhow::{Context, Result};
 use ccwatch::{
-    acp, auto_answer, backend, classify, config, hooks, notify, orchestrate, state, status, watch,
+    acp, auto_answer, backend, classify, config, hooks, notify, orchestrate, record, state, status,
+    watch,
 };
 use clap::{Parser, Subcommand};
 use config::{expand_tilde, Config, EffectiveMode, Mode};
@@ -88,6 +89,15 @@ enum Commands {
     Status,
     /// 把队列任务投给空闲会话(跨会话编排,需 [orchestration] enabled)。
     Dispatch,
+    /// 抓某会话当前 pane,提取候选特征行,打印建议的正则(不改 config)。
+    Record {
+        /// 目标会话名。
+        #[arg(long)]
+        session: String,
+        /// 这个 pane 对应的状态标签:working / waiting / idle。
+        #[arg(long)]
+        label: String,
+    },
     /// 往指定会话发一条指令(双向控制)。
     /// 抓屏模式:tmux send-keys 文本 + 单独 Enter 提交;协议模式:经 CodexClient 发一个 turn。
     Say {
@@ -216,6 +226,7 @@ async fn main() -> Result<()> {
         Commands::Check => run_check(cli.config),
         Commands::Status => run_status(cli.config),
         Commands::Dispatch => run_dispatch(cli.config),
+        Commands::Record { session, label } => run_record(cli.config, session, label),
         Commands::Say {
             session,
             message,
@@ -641,6 +652,33 @@ fn run_dispatch(cli_path: Option<PathBuf>) -> Result<()> {
     if dispatched == 0 {
         println!("(没有符合条件的 idle 会话,队列保持不变)");
     }
+    Ok(())
+}
+
+/// record:抓 pane,提取候选特征行,打印建议正则(不改 config)。
+fn run_record(cli_path: Option<PathBuf>, session: String, label: String) -> Result<()> {
+    let label = label.to_lowercase();
+    if !matches!(label.as_str(), "working" | "waiting" | "idle") {
+        anyhow::bail!("label 必须是 working / waiting / idle 之一,得到: {}", label);
+    }
+    let (cfg, _classifier) = load(cli_path)?;
+    let be = backend::make_backend(&cfg.general.backend);
+    let pane = be.capture_pane(&session, cfg.general.capture_lines)?;
+
+    let candidates = record::extract_candidates(&pane, 8);
+    if candidates.is_empty() {
+        println!("(会话 {} 的 pane 为空,没抓到候选特征)", session);
+        return Ok(());
+    }
+
+    println!("# 会话 {} 当前 pane 的候选特征(状态: {})", session, label);
+    println!("# 挑你觉得稳定的一两条,加进对应 profile 的 {} 数组:", label);
+    println!();
+    println!("{} = [", label);
+    for c in &candidates {
+        println!("  \"{}\",   # 来自: {}", c.regex, c.line);
+    }
+    println!("]");
     Ok(())
 }
 
