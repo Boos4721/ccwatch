@@ -1,6 +1,6 @@
 [package]
 name = "ccwatch"
-version = "0.1.0"
+version = "0.5.0"
 edition = "2021"
 description = "Universal agent session watchdog — monitor Claude Code / Codex / Gemini / etc tmux sessions and broadcast state transitions (done / stuck / idle)."
 license = "MIT"

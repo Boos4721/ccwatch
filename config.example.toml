@@ -22,6 +22,10 @@ state_file = "~/.config/ccwatch/state.json"
 # 「卡住」阈值(秒):一个会话处于 working 但 pane 内容(剥掉计时器/spinner 数字后)
 # 持续无变化超过此值,即播报一次「疑似卡住」(默认 600 = 10 分钟)
 stuck_threshold_secs = 600
+# 终端复用器后端:tmux(默认)或 screen(GNU screen)。
+# 注意:这与 `--mode screen`(抓屏 vs 协议轨道)是两个维度——backend 指底层用
+# tmux 还是 GNU screen 抓屏/发键。
+backend = "tmux"
 
 # ---- 投递(daemon 模式自投递;once 模式只打印 stdout 给 Hermes cron) ----
 [delivery]
@@ -47,6 +51,35 @@ notify_gone = true
 notify_new_waiting = true
 # 疑似卡住(working 持续无变化超过 stuck_threshold_secs)
 notify_stuck = true
+# 转移触发 hook(可选 shell 命令;注入 CCWATCH_SESSION/CCWATCH_STATE/CCWATCH_CONTEXT)。
+# 命令经 sh -c 执行,失败只 warn 不中断主循环。默认不配。仅抓屏轨道触发。
+# on_done_cmd    = "notify-send \"$CCWATCH_SESSION done\""
+# on_waiting_cmd = "echo \"$CCWATCH_SESSION waiting: $CCWATCH_CONTEXT\" >> ~/ccwatch.log"
+# on_working_cmd = ""
+# on_stuck_cmd   = "notify-send \"$CCWATCH_SESSION stuck\""
+
+# ==========================================================================
+# 自动应答 —— 命中 pane 正则时用 send-keys 自动回应安全弹窗
+# 默认全部禁用,必须显式 enabled = true 才生效。慎用:会真的替你按键。
+# ==========================================================================
+# [[auto_answer]]
+# profile = "codex"                  # 限定 profile(可选;省略则任意 profile 都触发)
+# match   = "Trust all and continue" # 匹配 pane 的正则
+# send    = "Enter"                  # 要发的按键(Enter / 1 / y …)
+# enabled = false                    # 默认关
+
+# ==========================================================================
+# 跨会话编排 —— 空闲会话自动领取任务队列里的下一条任务
+# 默认禁用。用 `ccwatch dispatch` 触发一次派发。慎用:会真的替你发指令。
+# ==========================================================================
+[orchestration]
+enabled = false
+# 只把任务投给会话名匹配此正则的 idle 会话(可选;省略则任意 idle 会话)
+# session_match = "^cc"
+# 内联任务队列(作为初始种子;配了 queue_file 时以文件为准)
+# task_queue = ["跑一下测试", "把 README 补一段"]
+# 队列文件路径(每行一个任务,出队后改写;支持 ~)
+# queue_file = "~/.config/ccwatch/queue.txt"
 
 # ==========================================================================
 # Agent Profiles —— 真实 pane 特征(2026-06 实测 claude/codex/gemini 抓取)

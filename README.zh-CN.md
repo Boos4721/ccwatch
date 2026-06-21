@@ -75,6 +75,47 @@ ccwatch say codex-a "修一下测试" --mode protocol
 
 抓屏模式是可靠两步:`send-keys -l` 先把字面文本塞进输入行,再单独发一次 `send-keys Enter` 提交(tmux 经常不补 Enter 就不提交)。协议模式把消息当一个 turn 经 CodexClient 发给 Codex。
 
+### `ccwatch status` —— 一屏总览
+
+列出每个被监控会话的当前状态 + 上次转移多久前(tty 下着色)。卡住显示 `stuck`,waiting 带子类型。
+
+```bash
+ccwatch status
+```
+
+### `ccwatch report` —— 每会话今日统计
+
+读状态文件,打印每个会话今日的累计统计:
+
+```bash
+ccwatch report
+# ccA              waited 3x / 18m · worked 42m · idle 1h
+```
+
+### `ccwatch tui` —— 实时总览面板
+
+一屏表格(session / profile / state / 时长 / context),按 `poll_interval_secs` 刷新,状态颜色区分(working 黄、waiting 红、idle 绿、stuck 闪红)。`q` / `Esc` / `Ctrl-C` 退出。
+
+```bash
+ccwatch tui
+```
+
+### `ccwatch dispatch` —— 把队列任务投给空闲会话
+
+需 `[orchestration] enabled = true` 才生效。给每个 idle 会话(可按 `session_match` 过滤)弹出一条队列任务,经 backend 发出。
+
+```bash
+ccwatch dispatch
+```
+
+### `ccwatch record` —— 从实时 pane 提建议正则
+
+抓某会话当前 pane,打印转义好的正则建议(不改 config):
+
+```bash
+ccwatch record --session ccA --label idle
+```
+
 ## 状态分类逻辑
 
 对每个匹配的 tmux 会话：
@@ -141,6 +182,41 @@ idle = ["(?m)^>\\s*$"]
 ```
 
 用 `ccwatch check` 看分类对不对，必要时调正则。
+
+## 后端（tmux / screen）
+
+`general.backend` 选择 ccwatch 驱动的复用器:`tmux`(默认)或 `screen`(GNU screen,
+经 `-ls` / `hardcopy` / `stuff`)。这与 `--mode` **正交**:backend 是复用器,mode 是
+状态来源(抓屏 vs ACP 协议)。加别的复用器只需实现 `Backend` trait。
+
+## 转移 hook
+
+`[transitions]` 可配在抓屏轨道转移时执行的 shell 命令:`on_done_cmd` /
+`on_waiting_cmd` / `on_working_cmd` / `on_stuck_cmd`。经 `sh -c` 执行,注入
+`CCWATCH_SESSION` / `CCWATCH_STATE` / `CCWATCH_CONTEXT`;失败只记日志,不中断主循环。
+
+## 自动应答（默认关）
+
+`[[auto_answer]]` 规则可自动回应安全弹窗:某规则的 `match` 正则命中 pane 时,ccwatch
+经 backend 发 `send` 按键。所有规则默认禁用,需 `enabled = true`;可用 `profile` 限定。
+慎用——它会真的替你按键。
+
+## 跨会话编排（默认关）
+
+`[orchestration]`(默认禁用)+ `ccwatch dispatch`:空闲会话从队列(内联 `task_queue`
+或 `queue_file`)领下一条任务,经 backend 投递。只投给 `session_match` 命中的 idle 会话。
+
+## 安装
+
+从 [GitHub Releases](https://github.com/Boos4721/ccwatch/releases) 下载预编译二进制
+(Linux x86_64/aarch64、macOS x86_64/aarch64),或从源码装:
+
+```bash
+cargo install --git https://github.com/Boos4721/ccwatch
+```
+
+Release 由 `.github/workflows/release.yml` 在每个 `v*` tag 上自动构建。
+发布到 crates.io 是 TODO。
 
 ## 挂 Hermes / cron
 

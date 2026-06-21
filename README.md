@@ -75,6 +75,47 @@ ccwatch say codex-a "fix the test" --mode protocol
 
 Screen mode is a reliable two-step: `send-keys -l` types the literal text, then a separate `send-keys Enter` submits it (tmux often won't submit without the standalone Enter). Protocol mode sends the message to Codex as one turn via the client.
 
+### `ccwatch status` — one-screen overview
+
+Lists every monitored session with its current state and how long ago it last transitioned (colorized on a tty). Stuck sessions show `stuck`; waiting shows its subtype.
+
+```bash
+ccwatch status
+```
+
+### `ccwatch report` — per-session daily stats
+
+Reads the state file and prints each session's rolling daily totals:
+
+```bash
+ccwatch report
+# ccA              waited 3x / 18m · worked 42m · idle 1h
+```
+
+### `ccwatch tui` — live overview panel
+
+A full-screen table (session / profile / state / duration / context) refreshing every `poll_interval_secs`, color-coded (working yellow, waiting red, idle green, stuck blinking red). Press `q` / `Esc` / `Ctrl-C` to quit.
+
+```bash
+ccwatch tui
+```
+
+### `ccwatch dispatch` — push queued tasks to idle sessions
+
+Disabled unless `[orchestration] enabled = true`. Pops one task per idle session (optionally filtered by `session_match`) and sends it through the backend.
+
+```bash
+ccwatch dispatch
+```
+
+### `ccwatch record` — suggest profile regexes from a live pane
+
+Captures a session's current pane and prints escaped regex suggestions (it never edits the config):
+
+```bash
+ccwatch record --session ccA --label idle
+```
+
 ## State classification logic
 
 For each matching tmux session:
@@ -141,6 +182,45 @@ idle = ["(?m)^>\\s*$"]
 ```
 
 Use `ccwatch check` to verify classification and tune the regexes if needed.
+
+## Backends (tmux / screen)
+
+`general.backend` selects the multiplexer ccwatch drives: `tmux` (default) or
+`screen` (GNU screen via `-ls` / `hardcopy` / `stuff`). This is **orthogonal** to
+`--mode`: backend is the multiplexer, mode is the tracking source (scrape vs ACP
+protocol). Adding another multiplexer means implementing the `Backend` trait.
+
+## Transition hooks
+
+`[transitions]` accepts optional shell commands run on the screen track when a
+transition fires: `on_done_cmd` / `on_waiting_cmd` / `on_working_cmd` /
+`on_stuck_cmd`. They run via `sh -c` with `CCWATCH_SESSION`, `CCWATCH_STATE` and
+`CCWATCH_CONTEXT` injected; failures are logged and never interrupt the loop.
+
+## Auto-answer (opt-in)
+
+`[[auto_answer]]` rules can answer safety prompts automatically: when a rule's
+`match` regex hits a session's pane, ccwatch sends `send` keys through the
+backend. All rules are disabled unless `enabled = true`; rules may be scoped to a
+`profile`. Use with care — it really presses keys for you.
+
+## Cross-session orchestration (opt-in)
+
+`[orchestration]` (disabled by default) plus `ccwatch dispatch` lets idle sessions
+pull the next task off a queue (`task_queue` inline or `queue_file`), sent via the
+backend. Only idle sessions matching `session_match` are targeted.
+
+## Install
+
+Download a prebuilt binary from [GitHub Releases](https://github.com/Boos4721/ccwatch/releases)
+(Linux x86_64/aarch64, macOS x86_64/aarch64), or build from source:
+
+```bash
+cargo install --git https://github.com/Boos4721/ccwatch
+```
+
+Releases are built by `.github/workflows/release.yml` on every `v*` tag.
+Publishing to crates.io is a TODO.
 
 ## Hooking into Hermes / cron
 
