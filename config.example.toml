@@ -12,7 +12,7 @@
 # ---- 全局 ----
 [general]
 # 监控哪些 tmux 会话:按会话名前缀过滤(空 = 全部会话)
-session_prefixes = ["cc", "codex", "gemini", "agent", "probe"]
+session_prefixes = ["cc", "codex", "gemini", "aider", "cline", "agent", "probe"]
 # 抓 pane 末尾多少行做分类
 capture_lines = 60
 # daemon 模式轮询间隔(秒)
@@ -120,3 +120,44 @@ waiting = [
   "\\(Use Enter to select\\)",
 ]
 idle = ["(?m)^>\\s*$", "Type your message", "for shortcuts"]
+
+# ---- Aider ----
+# TODO: 推测 profile,未经真实 pane 校准。Aider 是 REPL 式终端 agent。
+# WORKING: 跑工具/编辑时底部有 token/cost 行或中断提示(待校准)。
+# WAITING: 确认类提问 "(Y)es/(N)o" / commit 确认 / 加文件确认。
+# IDLE:    空的 ">" 输入提示符。
+[[profiles]]
+name = "aider"
+session_match = "^aider"
+detect = "aider|Aider v|Use /help"
+working = ["esc to interrupt", "Tokens:.*Cost:"]
+waiting = [
+  "\\(Y\\)es/\\(N\\)o",
+  "\\(y/n\\)",
+  "Add .* to the chat\\?",
+  "Apply edits\\?",
+]
+# waiting 子类型(推测,待校准)
+waiting_approval = ["\\(Y\\)es/\\(N\\)o", "\\(y/n\\)", "Apply edits\\?", "Add .* to the chat\\?"]
+waiting_input = ["Type a message", "^>\\s"]
+idle = ["(?m)^>\\s*$", "Use /help", "for help"]
+
+# ---- Cline (VS Code 扩展,也有 CLI 形态)----
+# TODO: 推测 profile,未经真实 pane 校准。
+# WORKING: 执行任务时的中断提示。
+# WAITING: 批准工具调用 "Approve" / "Reject" 类弹窗。
+# IDLE:    等待新任务输入。
+[[profiles]]
+name = "cline"
+session_match = "^cline"
+detect = "Cline|cline"
+working = ["esc to interrupt", "Executing"]
+waiting = [
+  "Approve",
+  "Reject",
+  "Do you want to proceed",
+  "\\(y/n\\)",
+]
+# waiting 子类型(推测,待校准)
+waiting_approval = ["Approve", "Reject", "Do you want to proceed", "\\(y/n\\)"]
+idle = ["(?m)^>\\s*$", "Type a task"]

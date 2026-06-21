@@ -175,3 +175,23 @@ fn waiting_without_subtype_match_is_none() {
     assert_eq!(res2.state, State::Waiting);
     assert_eq!(res2.wait_kind, Some(WaitKind::Input));
 }
+
+// ---- Aider / Cline(推测 profile,验证按会话名选中 + 子类型分类)----
+
+#[test]
+fn aider_waiting_approval_subtype() {
+    let pane = "Add main.py to the chat? (Y)es/(N)o [Yes]:";
+    assert_state("aider1", pane, "aider", State::Waiting);
+    let c = classifier();
+    let res = c.classify("aider1", pane).unwrap();
+    assert_eq!(res.wait_kind, Some(WaitKind::Approval));
+}
+
+#[test]
+fn cline_waiting_approval_subtype() {
+    let pane = "Cline wants to run a command\nApprove  Reject";
+    assert_state("cline1", pane, "cline", State::Waiting);
+    let c = classifier();
+    let res = c.classify("cline1", pane).unwrap();
+    assert_eq!(res.wait_kind, Some(WaitKind::Approval));
+}
