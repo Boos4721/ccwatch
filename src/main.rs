@@ -58,6 +58,27 @@ enum Commands {
         /// 覆盖配置里的轮询间隔(秒)。
         #[arg(long)]
         interval: Option<u64>,
+        /// 运行轨道:screen(抓屏)/ protocol(协议常驻)/ auto(优先协议,出错回退抓屏)。
+        #[arg(long, default_value = "screen")]
+        mode: String,
+        /// 协议模式目标 agent(当前支持:codex)。
+        #[arg(long, default_value = "codex")]
+        agent: String,
+        /// 协议模式:每个常驻 turn 发给 agent 的 prompt。
+        #[arg(long, default_value = "what is 2+2? reply with one word")]
+        prompt: String,
+        /// 协议模式:会话标签(播报里的 session 名;默认用 agent 名)。
+        #[arg(long)]
+        label: Option<String>,
+        /// 协议模式:单 turn 超时(秒)。
+        #[arg(long, default_value_t = 120)]
+        timeout: u64,
+        /// 协议模式:codex 审批策略。
+        #[arg(long, default_value = "never")]
+        approval_policy: String,
+        /// 协议模式:codex sandbox。
+        #[arg(long, default_value = "read-only")]
+        sandbox: String,
     },
     /// 列出当前所有匹配会话 + 状态(调试)。
     Check,
@@ -143,7 +164,29 @@ async fn main() -> Result<()> {
             )
             .await
         }
-        Commands::Daemon { interval } => run_daemon(cli.config, interval).await,
+        Commands::Daemon {
+            interval,
+            mode,
+            agent,
+            prompt,
+            label,
+            timeout,
+            approval_policy,
+            sandbox,
+        } => {
+            run_daemon(
+                cli.config,
+                interval,
+                &mode,
+                &agent,
+                &prompt,
+                label.as_deref(),
+                timeout,
+                &approval_policy,
+                &sandbox,
+            )
+            .await
+        }
         Commands::Check => run_check(cli.config),
         Commands::AcpProbe {
             agent,
@@ -265,15 +308,68 @@ async fn run_once_protocol(
     Ok(())
 }
 
-/// daemon:常驻循环。
-async fn run_daemon(cli_path: Option<PathBuf>, interval_override: Option<u64>) -> Result<()> {
+/// daemon:按 --mode 选轨道常驻。auto 优先协议,协议拉起/streaming 出错时回退抓屏。
+#[allow(clippy::too_many_arguments)]
+async fn run_daemon(
+    cli_path: Option<PathBuf>,
+    interval_override: Option<u64>,
+    mode_str: &str,
+    agent: &str,
+    prompt: &str,
+    label: Option<&str>,
+    timeout_secs: u64,
+    approval_policy: &str,
+    sandbox: &str,
+) -> Result<()> {
+    let mode = Mode::parse(mode_str)?;
+    let protocol_available = agent == "codex" && acp::codex_available();
+    let effective = mode.resolve(protocol_available);
+
+    if mode == Mode::Protocol && effective != EffectiveMode::Protocol {
+        anyhow::bail!(
+            "daemon --mode protocol 但协议不可用(agent={agent};codex 在 PATH 上?当前仅支持 codex)"
+        );
+    }
+
+    match effective {
+        EffectiveMode::Screen => run_daemon_screen(cli_path, interval_override).await,
+        EffectiveMode::Protocol => {
+            let r = run_daemon_protocol(
+                cli_path.clone(),
+                interval_override,
+                agent,
+                prompt,
+                label.unwrap_or(agent),
+                timeout_secs,
+                approval_policy,
+                sandbox,
+            )
+            .await;
+            // auto 模式下协议常驻出错:回退抓屏继续值守。显式 protocol 则向上抛错。
+            match r {
+                Ok(()) => Ok(()),
+                Err(e) if mode.fallback_on_error() => {
+                    tracing::warn!("协议常驻出错,回退抓屏继续值守: {}", e);
+                    run_daemon_screen(cli_path, interval_override).await
+                }
+                Err(e) => Err(e),
+            }
+        }
+    }
+}
+
+/// 抓屏常驻循环。(原行为,保持不变。)
+async fn run_daemon_screen(
+    cli_path: Option<PathBuf>,
+    interval_override: Option<u64>,
+) -> Result<()> {
     let (cfg, classifier) = load(cli_path)?;
     let state_path = cfg.state_file_path();
     let interval = interval_override.unwrap_or(cfg.general.poll_interval_secs);
     let notifier = notify::Notifier::from_delivery(&cfg.delivery)?;
 
     tracing::info!(
-        "ccwatch daemon 启动:轮询间隔 {}s,投递={},状态文件={}",
+        "ccwatch daemon 启动(抓屏):轮询间隔 {}s,投递={},状态文件={}",
         interval,
         cfg.delivery.mode,
         state_path.display()
@@ -302,6 +398,85 @@ async fn run_daemon(cli_path: Option<PathBuf>, interval_override: Option<u64>) -
             }
             Err(e) => tracing::warn!("扫描失败: {}", e),
         }
+    }
+}
+
+/// 协议常驻循环:以 CodexClient 为常驻 session 来源。每个 turn 的权威状态事件
+/// **实时**经同一套 TransitionTracker → Notifier 播报(不批量等到 turn 末)。
+/// 一个 turn 结束后按 interval 间隔再起下一轮,持续值守。
+///
+/// 任一轮拉起/streaming 失败即向上返回 Err,交由 run_daemon 决定是否回退抓屏。
+#[allow(clippy::too_many_arguments)]
+async fn run_daemon_protocol(
+    cli_path: Option<PathBuf>,
+    interval_override: Option<u64>,
+    agent: &str,
+    prompt: &str,
+    label: &str,
+    timeout_secs: u64,
+    approval_policy: &str,
+    sandbox: &str,
+) -> Result<()> {
+    if agent != "codex" {
+        anyhow::bail!("协议常驻当前只实现了 codex;gemini/claude 见 docs/ACP_RESEARCH.md。");
+    }
+    let cfg = {
+        let path = resolve_config_path(cli_path)?;
+        Config::load(&path)?
+    };
+    let state_path = cfg.state_file_path();
+    let interval = interval_override.unwrap_or(cfg.general.poll_interval_secs);
+    let notifier = notify::Notifier::from_delivery(&cfg.delivery)?;
+
+    tracing::info!(
+        "ccwatch daemon 启动(协议/codex):session 标签={},单 turn 超时 {}s,间隔 {}s",
+        label,
+        timeout_secs,
+        interval
+    );
+
+    let mut ticker = tokio::time::interval(Duration::from_secs(interval.max(1)));
+    loop {
+        ticker.tick().await;
+        // 每轮从磁盘状态续接,实时把事件投递出去(channel 解耦同步回调与异步投递)。
+        let prev = state::StateStore::load(&state_path).unwrap_or_default();
+        let mut tracker = state::TransitionTracker::from_store(cfg.transitions.clone(), &prev);
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<state::Event>();
+        let mut client = acp::CodexClient::spawn(None).context("拉起 codex mcp-server 失败")?;
+
+        // 投递任务:边收边投,实现"持续播报"。
+        let deliver = {
+            let notifier = &notifier;
+            async move {
+                while let Some(ev) = rx.recv().await {
+                    let single = [ev];
+                    if let Err(e) = notifier.deliver(&single).await {
+                        tracing::warn!("协议事件投递失败: {}", e);
+                    }
+                }
+            }
+        };
+
+        let run = client.run_turn(
+            prompt,
+            approval_policy,
+            sandbox,
+            Duration::from_secs(timeout_secs),
+            |ev| {
+                if let Some(sig) = ev.signal {
+                    if let Some(event) = tracker.observe(label, sig.state, sig.context) {
+                        let _ = tx.send(event);
+                    }
+                }
+            },
+        );
+
+        // 并发跑 turn 与投递;turn 结束后 tx 落,deliver 自然收尾。
+        let (turn_res, _) = tokio::join!(run, deliver);
+        client.shutdown().await;
+        tracker.to_store().save(&state_path).ok();
+        turn_res.context("协议 turn streaming 失败")?;
     }
 }
 

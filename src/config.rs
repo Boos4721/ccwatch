@@ -223,6 +223,12 @@ impl Mode {
             }
         }
     }
+
+    /// 协议轨道运行期出错时,是否应回退抓屏继续值守。
+    /// 仅 auto 回退;显式 protocol 把错误抛给用户(别偷偷换轨)。
+    pub fn fallback_on_error(self) -> bool {
+        matches!(self, Mode::Auto)
+    }
 }
 
 #[cfg(test)]
@@ -260,5 +266,13 @@ mod mode_tests {
     fn auto_prefers_protocol_then_falls_back() {
         assert_eq!(Mode::Auto.resolve(true), EffectiveMode::Protocol);
         assert_eq!(Mode::Auto.resolve(false), EffectiveMode::Screen);
+    }
+
+    #[test]
+    fn only_auto_falls_back_on_runtime_error() {
+        // auto 出错回退抓屏;screen/protocol 不回退(protocol 把错抛给用户)。
+        assert!(Mode::Auto.fallback_on_error());
+        assert!(!Mode::Protocol.fallback_on_error());
+        assert!(!Mode::Screen.fallback_on_error());
     }
 }
