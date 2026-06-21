@@ -89,6 +89,8 @@ enum Commands {
     Status,
     /// 把队列任务投给空闲会话(跨会话编排,需 [orchestration] enabled)。
     Dispatch,
+    /// 打印每会话今日各状态时长 + waiting 次数汇总(读状态文件)。
+    Report,
     /// 抓某会话当前 pane,提取候选特征行,打印建议的正则(不改 config)。
     Record {
         /// 目标会话名。
@@ -226,6 +228,7 @@ async fn main() -> Result<()> {
         Commands::Check => run_check(cli.config),
         Commands::Status => run_status(cli.config),
         Commands::Dispatch => run_dispatch(cli.config),
+        Commands::Report => run_report(cli.config),
         Commands::Record { session, label } => run_record(cli.config, session, label),
         Commands::Say {
             session,
@@ -679,6 +682,28 @@ fn run_record(cli_path: Option<PathBuf>, session: String, label: String) -> Resu
         println!("  \"{}\",   # 来自: {}", c.regex, c.line);
     }
     println!("]");
+    Ok(())
+}
+
+/// report:打印每会话今日各状态时长 + waiting 次数(读状态文件)。
+fn run_report(cli_path: Option<PathBuf>) -> Result<()> {
+    let (cfg, _classifier) = load(cli_path)?;
+    let store = state::StateStore::load(&cfg.state_file_path())?;
+
+    if store.sessions.is_empty() {
+        println!("(状态文件为空,还没有任何会话记录)");
+        return Ok(());
+    }
+
+    for session in store.sessions.keys() {
+        let durations = store.durations.get(session).cloned().unwrap_or_default();
+        let waited = store.waited_count.get(session).copied().unwrap_or(0);
+        println!(
+            "{:<16} {}",
+            session,
+            state::format_report_line(&durations, waited)
+        );
+    }
     Ok(())
 }
 

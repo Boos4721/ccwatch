@@ -137,6 +137,21 @@ pub fn scan_once(
             prev.changed_at.get(&snap.session).copied().unwrap_or(now)
         };
         new_store.changed_at.insert(snap.session.clone(), changed);
+
+        // report 时长累计:把上次扫描到现在的时长记到上一个状态头上(跨日清零)。
+        let (durations, waited, day) = crate::state::accumulate(
+            prev.durations.get(&snap.session),
+            prev.waited_count.get(&snap.session).copied().unwrap_or(0),
+            prev.day.get(&snap.session).copied(),
+            prev.seen_at.get(&snap.session).copied(),
+            prev_state,
+            snap.state,
+            now,
+        );
+        new_store.durations.insert(snap.session.clone(), durations);
+        new_store.waited_count.insert(snap.session.clone(), waited);
+        new_store.day.insert(snap.session.clone(), day);
+        new_store.seen_at.insert(snap.session.clone(), now);
     }
 
     // 2) 上次记过、这次没分类出来的会话:
@@ -156,6 +171,19 @@ pub fn scan_once(
             }
             if let Some(t) = prev.changed_at.get(sess) {
                 new_store.changed_at.insert(sess.clone(), *t);
+            }
+            // report 统计原样带出(不累计这一帧,因为状态未知)。
+            if let Some(d) = prev.durations.get(sess) {
+                new_store.durations.insert(sess.clone(), d.clone());
+            }
+            if let Some(w) = prev.waited_count.get(sess) {
+                new_store.waited_count.insert(sess.clone(), *w);
+            }
+            if let Some(d) = prev.day.get(sess) {
+                new_store.day.insert(sess.clone(), *d);
+            }
+            if let Some(t) = prev.seen_at.get(sess) {
+                new_store.seen_at.insert(sess.clone(), *t);
             }
         } else if cfg.transitions.notify_gone {
             events.push(Event::Gone {

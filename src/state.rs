@@ -29,6 +29,18 @@ pub struct StateStore {
     /// 会话 -> 上次状态转移的 unix 秒(status 视图显示"多久前转的";向后兼容默认空)。
     #[serde(default)]
     pub changed_at: BTreeMap<String, u64>,
+    /// 会话 -> 上次扫描时刻(report 时长累计用;向后兼容默认空)。
+    #[serde(default)]
+    pub seen_at: BTreeMap<String, u64>,
+    /// 会话 -> 今日各状态累计秒数(state 名 -> 秒;report 用)。
+    #[serde(default)]
+    pub durations: BTreeMap<String, BTreeMap<String, u64>>,
+    /// 会话 -> 今日进入 waiting 的次数(report 用)。
+    #[serde(default)]
+    pub waited_count: BTreeMap<String, u64>,
+    /// 会话 -> durations/waited_count 归属的天编号(跨日自动清零)。
+    #[serde(default)]
+    pub day: BTreeMap<String, u64>,
 }
 
 impl StateStore {
@@ -192,6 +204,106 @@ pub fn detect_transition(
     }
 }
 
+/// Unix 秒 → 天编号(UTC 自然日),用于今日统计跨日重置。
+pub fn day_of(ts: u64) -> u64 {
+    ts / 86_400
+}
+
+/// report 时长累计:把"上次扫描到现在"的时长记到上一个状态头上,跨日清零。
+///
+/// 返回 (新的今日各状态时长 map, 新的 waited 次数, 新的天编号)。纯函数便于单测。
+/// - `prev_state`:上次记录的状态(None = 首见,不累计,只建基线)。
+/// - `cur`:当前状态(用于 waiting 计数)。
+pub fn accumulate(
+    prev_durations: Option<&BTreeMap<String, u64>>,
+    prev_waited: u64,
+    prev_day: Option<u64>,
+    prev_seen: Option<u64>,
+    prev_state: Option<State>,
+    cur: State,
+    now: u64,
+) -> (BTreeMap<String, u64>, u64, u64) {
+    let today = day_of(now);
+    // 跨日(或首见)清零今日统计。
+    let (mut durations, mut waited) = match prev_day {
+        Some(d) if d == today => (
+            prev_durations.cloned().unwrap_or_default(),
+            prev_waited,
+        ),
+        _ => (BTreeMap::new(), 0),
+    };
+
+    // 把上次扫描到现在的时长记到"上一个状态"头上。
+    if let (Some(seen), Some(ps)) = (prev_seen, prev_state) {
+        let delta = now.saturating_sub(seen).min(86_400);
+        if delta > 0 {
+            *durations.entry(ps.as_str().to_string()).or_insert(0) += delta;
+        }
+    }
+
+    // 进入 waiting(状态真变成 waiting)计一次。
+    if cur == State::Waiting && prev_state != Some(State::Waiting) {
+        waited += 1;
+    }
+
+    (durations, waited, today)
+}
+
+/// 把一条会话的今日统计格式化成 report 行尾,
+/// 如 `waited 3x / 18m · worked 42m · idle 1h`。
+pub fn format_report_line(durations: &BTreeMap<String, u64>, waited: u64) -> String {
+    let g = |k: &str| durations.get(k).copied().unwrap_or(0);
+    format!(
+        "waited {}x / {} · worked {} · idle {}",
+        waited,
+        crate::util::fmt_dur(g("waiting")),
+        crate::util::fmt_dur(g("working")),
+        crate::util::fmt_dur(g("idle"))
+    )
+}
+
+#[cfg(test)]
+mod report_tests {
+    use super::*;
+
+    #[test]
+    fn accumulates_time_into_prev_state() {
+        let (d, _w, _day) = accumulate(None, 0, Some(day_of(1000)), Some(1000), Some(State::Working), State::Idle, 1100);
+        assert_eq!(d.get("working").copied(), Some(100));
+    }
+
+    #[test]
+    fn waiting_increments_count_on_entry_only() {
+        // idle → waiting:+1
+        let (_d, w, _) = accumulate(None, 2, Some(day_of(1000)), Some(1000), Some(State::Idle), State::Waiting, 1010);
+        assert_eq!(w, 3);
+        // waiting → waiting:不再+1
+        let (_d2, w2, _) = accumulate(None, 3, Some(day_of(1000)), Some(1000), Some(State::Waiting), State::Waiting, 1010);
+        assert_eq!(w2, 3);
+    }
+
+    #[test]
+    fn cross_day_resets() {
+        let mut prev = BTreeMap::new();
+        prev.insert("working".to_string(), 999u64);
+        // prev_day = 0,now 落在 day 1 → 清零,再记新增量。
+        let (d, w, day) = accumulate(Some(&prev), 5, Some(0), Some(86_000), Some(State::Idle), State::Idle, 90_000);
+        assert_eq!(day, 1);
+        assert_eq!(w, 0);
+        // 旧的 working=999 被清掉,只剩本次 idle 增量。
+        assert_eq!(d.get("working").copied(), None);
+    }
+
+    #[test]
+    fn format_report_line_renders() {
+        let mut d = BTreeMap::new();
+        d.insert("waiting".to_string(), 1080);
+        d.insert("working".to_string(), 2520);
+        d.insert("idle".to_string(), 3600);
+        assert_eq!(format_report_line(&d, 3), "waited 3x / 18m · worked 42m · idle 1h");
+    }
+}
+
 /// 流式转移追踪器:协议轨道用。
 ///
 /// 抓屏轨道是"扫描一遍 → diff"(批式,`scan_once`);协议轨道是事件流(推式)。
@@ -207,6 +319,11 @@ pub struct TransitionTracker {
     stuck: BTreeMap<String, StuckMeta>,
     /// 上次转移时刻(unix 秒);status 视图用。
     changed_at: BTreeMap<String, u64>,
+    /// report 统计原样带入带出(协议轨道不累计时长,只保持不丢)。
+    seen_at: BTreeMap<String, u64>,
+    durations: BTreeMap<String, BTreeMap<String, u64>>,
+    waited_count: BTreeMap<String, u64>,
+    day: BTreeMap<String, u64>,
 }
 
 impl TransitionTracker {
@@ -217,6 +334,10 @@ impl TransitionTracker {
             last: BTreeMap::new(),
             stuck: BTreeMap::new(),
             changed_at: BTreeMap::new(),
+            seen_at: BTreeMap::new(),
+            durations: BTreeMap::new(),
+            waited_count: BTreeMap::new(),
+            day: BTreeMap::new(),
         }
     }
 
@@ -232,6 +353,10 @@ impl TransitionTracker {
             last,
             stuck: store.stuck.clone(),
             changed_at: store.changed_at.clone(),
+            seen_at: store.seen_at.clone(),
+            durations: store.durations.clone(),
+            waited_count: store.waited_count.clone(),
+            day: store.day.clone(),
         }
     }
 
@@ -265,6 +390,10 @@ impl TransitionTracker {
                 .collect(),
             stuck: self.stuck.clone(),
             changed_at: self.changed_at.clone(),
+            seen_at: self.seen_at.clone(),
+            durations: self.durations.clone(),
+            waited_count: self.waited_count.clone(),
+            day: self.day.clone(),
         }
     }
 }
