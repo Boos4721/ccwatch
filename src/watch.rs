@@ -13,6 +13,8 @@ pub struct SessionSnapshot {
     pub profile: String,
     pub state: State,
     pub context: Option<String>,
+    /// waiting 子类型(非 waiting 为 None)。
+    pub wait_kind: Option<crate::classify::WaitKind>,
     /// 规整后内容签名(卡住检测用;剥数字抗 spinner/计时器噪音)。
     pub content_sig: u64,
 }
@@ -30,6 +32,7 @@ pub fn scan_snapshots(cfg: &Config, classifier: &Classifier) -> Result<Vec<Sessi
             profile,
             state,
             context,
+            wait_kind,
         }) = classifier.classify(&s, &pane)
         {
             snaps.push(SessionSnapshot {
@@ -37,6 +40,7 @@ pub fn scan_snapshots(cfg: &Config, classifier: &Classifier) -> Result<Vec<Sessi
                 profile,
                 state,
                 context,
+                wait_kind,
                 content_sig: stuck::content_signature(&pane),
             });
         }
@@ -79,6 +83,7 @@ pub fn scan_once(
             prev_state,
             snap.state,
             &snap.context,
+            snap.wait_kind,
             &cfg.transitions,
         ) {
             events.push(ev);

@@ -153,6 +153,15 @@ pub struct Profile {
     /// IDLE 规则。
     #[serde(default)]
     pub idle: Vec<String>,
+    /// WAITING 子类型:等审批(y/n)的特征(可选)。
+    #[serde(default)]
+    pub waiting_approval: Vec<String>,
+    /// WAITING 子类型:等文本输入的特征(可选)。
+    #[serde(default)]
+    pub waiting_input: Vec<String>,
+    /// WAITING 子类型:等菜单/方向键选择的特征(可选)。
+    #[serde(default)]
+    pub waiting_menu: Vec<String>,
 }
 
 impl Config {

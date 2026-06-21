@@ -72,6 +72,13 @@ waiting = [
   "❯\\s*1\\.",
   "Press Enter to continue",
 ]
+# waiting 子类型(可选;命中即细分播报"在等什么")。优先级 approval > menu > input。
+# approval:等 y/n 审批
+waiting_approval = ["Do you want", "Would you like", "\\(y/n\\)", "bypass permissions"]
+# menu:等方向键/编号菜单选择
+waiting_menu = ["Enter to select", "Tab/Arrow keys", "❯\\s*1\\."]
+# input:等用户敲文本
+waiting_input = ["Press Enter to continue", "type your"]
 idle = ["for agents", "(?m)^❯\\s*$", "new task\\? /clear"]
 
 # ---- Codex (OpenAI) ----
@@ -91,6 +98,10 @@ waiting = [
   "Review hooks",
   "\\(y/n\\)",
 ]
+# waiting 子类型
+waiting_approval = ["Trust all and continue", "\\(y/n\\)", "Allow command", "approve"]
+waiting_menu = ["Use Enter to select", "›\\s*1\\.", "Press enter to confirm", "Review hooks"]
+waiting_input = ["Type a message"]
 # codex idle:有输入框 › 提示 + 底部模型状态行,但没有 Working
 idle = ["(?m)^›\\s*$", "Use /skills to list", "·\\s*~/"]
 

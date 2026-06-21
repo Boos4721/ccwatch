@@ -1,6 +1,6 @@
 //! 状态文件读写(JSON: session -> last_state)+ 转移检测。
 
-use crate::classify::State;
+use crate::classify::{State, WaitKind};
 use crate::config::Transitions;
 use crate::stuck::StuckMeta;
 use anyhow::{Context, Result};
@@ -64,6 +64,7 @@ pub enum Event {
     Waiting {
         session: String,
         context: Option<String>,
+        kind: Option<WaitKind>,
     },
     /// 开始干:* → working(默认不报)。
     Working { session: String },
@@ -73,6 +74,7 @@ pub enum Event {
     NewWaiting {
         session: String,
         context: Option<String>,
+        kind: Option<WaitKind>,
     },
     /// 疑似卡住:working 但内容持续无变化超过阈值。带已卡秒数。
     Stuck { session: String, secs: u64 },
@@ -92,12 +94,13 @@ impl Event {
 }
 
 /// 判定单个会话从 prev 到 cur 的转移,按开关产出事件(可能为 None)。
-/// `context` 是当前分类抽取的上下文。
+/// `context` 是当前分类抽取的上下文,`wait_kind` 是 waiting 子类型(非 waiting 传 None)。
 pub fn detect_transition(
     session: &str,
     prev: Option<State>,
     cur: State,
     context: &Option<String>,
+    wait_kind: Option<WaitKind>,
     tr: &Transitions,
 ) -> Option<Event> {
     match prev {
@@ -107,6 +110,7 @@ pub fn detect_transition(
                 return Some(Event::NewWaiting {
                     session: session.to_string(),
                     context: context.clone(),
+                    kind: wait_kind,
                 });
             }
             // 首次见到的其他状态只建基线,不播报。
@@ -133,6 +137,7 @@ pub fn detect_transition(
                         Some(Event::Waiting {
                             session: session.to_string(),
                             context: context.clone(),
+                            kind: wait_kind,
                         })
                     } else {
                         None
@@ -194,15 +199,16 @@ impl TransitionTracker {
     }
 
     /// 喂入某会话的当前观测状态,返回该走播报的转移事件(可能为 None)。
-    /// 内部更新 per-session 上次状态。
+    /// 内部更新 per-session 上次状态。`wait_kind` 是 waiting 子类型(非 waiting 传 None)。
     pub fn observe(
         &mut self,
         session: &str,
         cur: State,
         context: Option<String>,
+        wait_kind: Option<WaitKind>,
     ) -> Option<Event> {
         let prev = self.last.get(session).copied();
-        let ev = detect_transition(session, prev, cur, &context, &self.transitions);
+        let ev = detect_transition(session, prev, cur, &context, wait_kind, &self.transitions);
         self.last.insert(session.to_string(), cur);
         ev
     }
@@ -233,15 +239,15 @@ mod tracker_tests {
     #[test]
     fn first_observation_is_baseline_only() {
         let mut t = TransitionTracker::new(tr());
-        assert_eq!(t.observe("codex", State::Working, None), None);
+        assert_eq!(t.observe("codex", State::Working, None, None), None);
     }
 
     /// working → idle 产出 Done(协议轨道:task_started 后 task_complete)。
     #[test]
     fn working_to_idle_emits_done() {
         let mut t = TransitionTracker::new(tr());
-        t.observe("codex", State::Working, None); // 基线
-        let ev = t.observe("codex", State::Idle, Some("Four".to_string()));
+        t.observe("codex", State::Working, None, None); // 基线
+        let ev = t.observe("codex", State::Idle, Some("Four".to_string()), None);
         assert_eq!(
             ev,
             Some(Event::Done {
@@ -251,17 +257,23 @@ mod tracker_tests {
         );
     }
 
-    /// working → waiting 产出 Waiting(协议轨道:task_started 后 approval 请求)。
+    /// working → waiting 产出 Waiting,且带上子类型(协议轨道:approval 请求)。
     #[test]
     fn working_to_waiting_emits_waiting() {
         let mut t = TransitionTracker::new(tr());
-        t.observe("codex", State::Working, None);
-        let ev = t.observe("codex", State::Waiting, Some("rm -rf build".to_string()));
+        t.observe("codex", State::Working, None, None);
+        let ev = t.observe(
+            "codex",
+            State::Waiting,
+            Some("rm -rf build".to_string()),
+            Some(WaitKind::Approval),
+        );
         assert_eq!(
             ev,
             Some(Event::Waiting {
                 session: "codex".to_string(),
                 context: Some("rm -rf build".to_string()),
+                kind: Some(WaitKind::Approval),
             })
         );
     }
@@ -270,9 +282,9 @@ mod tracker_tests {
     #[test]
     fn repeated_state_no_event() {
         let mut t = TransitionTracker::new(tr());
-        t.observe("codex", State::Working, None);
-        assert_eq!(t.observe("codex", State::Working, None), None);
-        assert_eq!(t.observe("codex", State::Working, None), None);
+        t.observe("codex", State::Working, None, None);
+        assert_eq!(t.observe("codex", State::Working, None, None), None);
+        assert_eq!(t.observe("codex", State::Working, None, None), None);
     }
 
     /// 从磁盘状态初始化:上次 working,这次直接 idle → 立刻 Done(跨进程接续)。
@@ -283,7 +295,7 @@ mod tracker_tests {
             .sessions
             .insert("codex".to_string(), "working".to_string());
         let mut t = TransitionTracker::from_store(tr(), &store);
-        let ev = t.observe("codex", State::Idle, None);
+        let ev = t.observe("codex", State::Idle, None, None);
         assert!(matches!(ev, Some(Event::Done { .. })));
     }
 
@@ -291,7 +303,7 @@ mod tracker_tests {
     #[test]
     fn to_store_roundtrip() {
         let mut t = TransitionTracker::new(tr());
-        t.observe("codex", State::Waiting, None);
+        t.observe("codex", State::Waiting, None, None);
         let store = t.to_store();
         assert_eq!(store.sessions.get("codex").map(String::as_str), Some("waiting"));
     }
@@ -310,11 +322,11 @@ mod tracker_tests {
         ];
         for (prev, cur, ctx) in cases {
             // 抓屏路径:直接调 detect_transition。
-            let screen = detect_transition("s", Some(prev), cur, &ctx, &tr());
+            let screen = detect_transition("s", Some(prev), cur, &ctx, None, &tr());
             // 协议路径:tracker 先用 prev 建基线,再 observe cur。
             let mut t = TransitionTracker::new(tr());
-            t.observe("s", prev, None);
-            let protocol = t.observe("s", cur, ctx.clone());
+            t.observe("s", prev, None, None);
+            let protocol = t.observe("s", cur, ctx.clone(), None);
             assert_eq!(
                 screen, protocol,
                 "两轨对 {:?}->{:?} 必须产出一致事件",
@@ -329,7 +341,7 @@ mod tracker_tests {
         let mut t = Transitions::default();
         t.notify_done = false;
         let mut tk = TransitionTracker::new(t);
-        tk.observe("codex", State::Working, None);
-        assert_eq!(tk.observe("codex", State::Idle, None), None);
+        tk.observe("codex", State::Working, None, None);
+        assert_eq!(tk.observe("codex", State::Idle, None, None), None);
     }
 }

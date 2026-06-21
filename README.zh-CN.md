@@ -8,7 +8,8 @@
 
 - 纯 Rust 单二进制，零运行时依赖。
 - 配置驱动：加新 agent = 加一段 `[[profiles]]`，不改代码。
-- 三模式：`once`（给 cron）/ `daemon`（常驻自投递）/ `check`（调试）。
+- 双轨:**抓屏**(tmux pane 正则,零侵入)或**协议**(以 ACP/MCP 拉起 agent 读权威状态)。`auto` 优先协议、不可用回退抓屏。
+- 三模式:`once`(给 cron)/ `daemon`(常驻自投递)/ `check`(调试),外加 `status`(一屏总览)和 `say`(往会话发消息)。
 
 ## 构建
 
@@ -80,12 +81,41 @@ ccwatch check
 | 转移 | 播报 | 开关 |
 |------|------|------|
 | working/waiting/unknown → idle | `✅ <session> 干完了，空闲待命` | `notify_done` |
-| 任意 → waiting | `⏸ <session> 卡住了，在等你拍板` | `notify_waiting` |
+| 任意 → waiting | `⏸ <session> 卡住了，在等你…`（带子类型，见下） | `notify_waiting` |
 | idle/waiting → working | `▶ <session> 开始干了`（默认关） | `notify_working` |
 | 会话消失 | `⚫ <session> 会话已结束` | `notify_gone` |
-| 新会话首次见到且已 waiting | `⏸ <session> 一上来就在等你拍板` | `notify_new_waiting` |
+| 新会话首次见到且已 waiting | `⏸ <session> 一上来就在等你…` | `notify_new_waiting` |
+| working 但内容持续无变化超 `stuck_threshold_secs` | `⚠ <session> 疑似卡住了（已 Nm 无变化）` | `notify_stuck` |
 
 播报带一句上下文：waiting 抓最后的菜单/提问行，idle 抓最近的 `●`/`✻`/`✔` 总结行，截断到 ~120 字符。
+
+### waiting 子类型
+
+`waiting` 进一步细分，让播报说清**在等什么**：
+
+- `approval` —— 等 y/n 审批（如 bypass permissions / trust 提示）。
+- `input` —— 等用户输入文本。
+- `menu` —— 等菜单 / 方向键选择。
+
+抓屏模式靠每个 profile 可选的子类型正则识别（`waiting_approval` / `waiting_input` / `waiting_menu`，优先级 approval > menu > input）；协议模式按事件类型映射（如 Codex 的 `*_approval_request` → `approval`）。子类型都不中时回退到通用文案。
+
+### 卡住检测
+
+会话停在 `working` 但实际卡死（等不存在的输入 / 死循环 / network hang）时不会转移，本来就不会被播报。ccwatch 据此补一刀：当 pane 内容(剥掉数字,让 spinner/计时器不算"进展")持续无变化超过 `stuck_threshold_secs`(默认 600)，播报一次 `⚠ 疑似卡住`。有真实进展(或离开 working)即重置计时，再次卡住能再报。
+
+## 轨道与模式
+
+`once` 和 `daemon` 都支持 `--mode screen|protocol|auto`：
+
+- `screen`(默认)—— 抓 tmux pane。零侵入：监控你手动裸跑的会话。
+- `protocol` —— ccwatch 以 ACP/MCP client 身份自己拉起 agent，读权威状态事件(当前 Codex 走 `codex mcp-server`)。两轨共用**同一套**转移规则与投递路径。
+- `auto` —— 协议可用(如 `codex` 在 PATH)就走协议，否则回退抓屏。`daemon` 下协议运行期出错也回退抓屏循环。
+
+```bash
+ccwatch daemon --mode auto                       # 优先协议，回退抓屏
+ccwatch daemon --mode protocol --agent codex     # 协议常驻监控
+ccwatch once --mode protocol --label codex-a --prompt "..."
+```
 
 ## 加新 agent profile
 

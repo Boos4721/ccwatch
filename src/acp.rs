@@ -14,7 +14,7 @@
 //!   - `task_complete`                   → Idle(turn 完成)
 //!   - 其余(session_configured / item_* / *_delta / token_count / mcp_startup_*)→ 无状态变化
 
-use crate::classify::State;
+use crate::classify::{State, WaitKind};
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use std::process::Stdio;
@@ -29,11 +29,25 @@ use tokio::process::{Child, ChildStdin, Command};
 pub struct StateSignal {
     pub state: State,
     pub context: Option<String>,
+    /// waiting 子类型(协议事件直接给出,如 approval);非 waiting 为 None。
+    pub wait_kind: Option<WaitKind>,
 }
 
 impl StateSignal {
     fn new(state: State, context: Option<String>) -> StateSignal {
-        StateSignal { state, context }
+        StateSignal {
+            state,
+            context,
+            wait_kind: None,
+        }
+    }
+
+    fn waiting(context: Option<String>, kind: WaitKind) -> StateSignal {
+        StateSignal {
+            state: State::Waiting,
+            context,
+            wait_kind: Some(kind),
+        }
     }
 }
 
@@ -74,11 +88,11 @@ pub fn classify_codex_msg(msg: &Value) -> Option<StateSignal> {
         // turn 开始 = 正在干活。
         "task_started" => Some(StateSignal::new(State::Working, None)),
 
-        // 等用户批准执行命令 / 应用补丁 = 卡住等拍板。
+        // 等用户批准执行命令 / 应用补丁 = 卡住等拍板(子类型:approval)。
         // 注:本机环境(approval_policy=never)未触发,type 名取自 codex MCP 协议;
         // 映射逻辑用合成 fixture 单测覆盖。详见 docs/ACP_RESEARCH.md。
         "exec_approval_request" | "apply_patch_approval_request" => {
-            Some(StateSignal::new(State::Waiting, approval_context(msg)))
+            Some(StateSignal::waiting(approval_context(msg), WaitKind::Approval))
         }
 
         // turn 完成 = 空闲待命。带最后一句 agent 消息当上下文。

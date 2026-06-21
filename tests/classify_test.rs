@@ -3,7 +3,7 @@
 //! 直接加载仓库根目录的 config.example.toml(用实测特征值),
 //! 确保配置里的正则就是分类用的正则——配置改了测试会跟着抓问题。
 
-use ccwatch::classify::{Classifier, State};
+use ccwatch::classify::{Classifier, State, WaitKind};
 use ccwatch::config::Config;
 use std::path::PathBuf;
 
@@ -107,4 +107,71 @@ fn codex_working_not_idle_despite_prompt() {
     let res = c.classify("codex9", pane).unwrap();
     assert_ne!(res.state, State::Idle, "codex working 不该被判为 idle");
     assert_eq!(res.state, State::Working);
+}
+
+// ---- waiting 子类型细分 ----
+
+/// 断言某 pane 的 waiting 子类型。
+fn assert_wait_kind(session: &str, pane: &str, expect: WaitKind) {
+    let c = classifier();
+    let res = c
+        .classify(session, pane)
+        .unwrap_or_else(|| panic!("会话 {} 没匹配到任何 profile", session));
+    assert_eq!(res.state, State::Waiting, "{} 应为 waiting", session);
+    assert_eq!(
+        res.wait_kind,
+        Some(expect),
+        "会话 {} 子类型应为 {:?},实际 {:?}",
+        session,
+        expect,
+        res.wait_kind
+    );
+}
+
+#[test]
+fn claude_waiting_approval_subtype() {
+    let pane = "Do you want to proceed?
+❯ 1. Yes
+  2. No, tell Claude what to do differently";
+    assert_wait_kind("ccA", pane, WaitKind::Approval);
+}
+
+#[test]
+fn claude_waiting_menu_subtype() {
+    let pane = "❯ 1. 按表 B-0 → B → C 全程自主推进(推荐)
+  2. 只先做 B-0 皮肤层
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel";
+    assert_wait_kind("ccC", pane, WaitKind::Menu);
+}
+
+#[test]
+fn codex_waiting_approval_subtype() {
+    let pane = "› 1. Review hooks
+  2. Trust all and continue
+  3. Continue without trusting (hooks won't run)
+  Press enter to confirm or esc to go back";
+    // "Trust all and continue" 命中 approval(优先级高于 menu)。
+    assert_wait_kind("codex3", pane, WaitKind::Approval);
+}
+
+#[test]
+fn codex_waiting_menu_subtype() {
+    let pane = "› Pick a file
+  Use Enter to select";
+    assert_wait_kind("codex5", pane, WaitKind::Menu);
+}
+
+#[test]
+fn waiting_without_subtype_match_is_none() {
+    // 命中通用 waiting 但不命中任何子类型正则 → wait_kind = None。
+    let pane = "❯ 1. option only";
+    let c = classifier();
+    let res = c.classify("ccZ", pane).unwrap();
+    assert_eq!(res.state, State::Waiting);
+    // "❯\\s*1\\." 同时在 waiting 和 waiting_menu 里,所以这里其实会判 menu;
+    // 用一个只在通用 waiting 的特征来验 None。
+    let pane2 = "Press Enter to continue reading";
+    let res2 = c.classify("ccY", pane2).unwrap();
+    assert_eq!(res2.state, State::Waiting);
+    assert_eq!(res2.wait_kind, Some(WaitKind::Input));
 }

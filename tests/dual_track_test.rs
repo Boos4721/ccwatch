@@ -16,7 +16,7 @@ fn run_frames(label: &str, frames: &[serde_json::Value]) -> Vec<Event> {
     let mut events = Vec::new();
     for f in frames {
         if let Some(sig) = classify_codex_frame(f) {
-            if let Some(ev) = tracker.observe(label, sig.state, sig.context) {
+            if let Some(ev) = tracker.observe(label, sig.state, sig.context, sig.wait_kind) {
                 events.push(ev);
             }
         }
@@ -64,8 +64,10 @@ fn turn_with_approval_emits_waiting_then_done() {
     assert_eq!(events.len(), 2, "实际 {:?}", events);
     assert!(matches!(events[0], Event::Waiting { .. }));
     assert!(matches!(events[1], Event::Done { .. }));
-    if let Event::Waiting { context, .. } = &events[0] {
+    if let Event::Waiting { context, kind, .. } = &events[0] {
         assert_eq!(context.as_deref(), Some("rm -rf build"));
+        // 协议轨道 approval 事件应映射成 approval 子类型。
+        assert_eq!(*kind, Some(ccwatch::classify::WaitKind::Approval));
     }
 }
 

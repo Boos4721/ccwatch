@@ -45,6 +45,45 @@ impl fmt::Display for State {
     }
 }
 
+/// waiting 的子类型:在等什么。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WaitKind {
+    /// 等 y/n 审批(如 bypass permissions 提示、Do you want)。
+    Approval,
+    /// 等用户输入文本。
+    Input,
+    /// 等选择菜单 / 方向键选项。
+    Menu,
+}
+
+impl WaitKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            WaitKind::Approval => "approval",
+            WaitKind::Input => "input",
+            WaitKind::Menu => "menu",
+        }
+    }
+
+    /// 中文播报标签。
+    pub fn label_zh(&self) -> &'static str {
+        match self {
+            WaitKind::Approval => "等审批",
+            WaitKind::Input => "等输入",
+            WaitKind::Menu => "等选择",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<WaitKind> {
+        match s {
+            "approval" => Some(WaitKind::Approval),
+            "input" => Some(WaitKind::Input),
+            "menu" => Some(WaitKind::Menu),
+            _ => None,
+        }
+    }
+}
+
 /// 一次分类的结果。
 #[derive(Debug, Clone)]
 pub struct Classification {
@@ -53,6 +92,8 @@ pub struct Classification {
     pub state: State,
     /// 给播报用的一句上下文(可能为空)。
     pub context: Option<String>,
+    /// waiting 时的子类型(非 waiting 为 None)。
+    pub wait_kind: Option<WaitKind>,
 }
 
 /// 编译好的单个 profile(正则已编译)。
@@ -63,6 +104,10 @@ struct CompiledProfile {
     working: Vec<Regex>,
     waiting: Vec<Regex>,
     idle: Vec<Regex>,
+    /// waiting 子类型正则(可选;命中即细分,否则子类型为 None)。
+    waiting_approval: Vec<Regex>,
+    waiting_input: Vec<Regex>,
+    waiting_menu: Vec<Regex>,
 }
 
 /// 编译好的分类器,持有所有 profile。
@@ -109,6 +154,9 @@ impl Classifier {
             working: compile_rules(&p.working, &p.name, "working")?,
             waiting: compile_rules(&p.waiting, &p.name, "waiting")?,
             idle: compile_rules(&p.idle, &p.name, "idle")?,
+            waiting_approval: compile_rules(&p.waiting_approval, &p.name, "waiting_approval")?,
+            waiting_input: compile_rules(&p.waiting_input, &p.name, "waiting_input")?,
+            waiting_menu: compile_rules(&p.waiting_menu, &p.name, "waiting_menu")?,
         })
     }
 
@@ -117,10 +165,16 @@ impl Classifier {
         let profile = self.select_profile(session, pane)?;
         let state = profile.classify_state(pane);
         let context = extract_context(state, pane);
+        let wait_kind = if state == State::Waiting {
+            profile.classify_wait_kind(pane)
+        } else {
+            None
+        };
         Some(Classification {
             profile: profile.name.clone(),
             state,
             context,
+            wait_kind,
         })
     }
 
@@ -159,6 +213,21 @@ impl CompiledProfile {
             return State::Idle;
         }
         State::Unknown
+    }
+
+    /// waiting 子类型细分:approval > menu > input(命中靠前者优先)。
+    /// 三组都没配/都不中时返回 None(只知道在等,不知等什么)。
+    fn classify_wait_kind(&self, pane: &str) -> Option<WaitKind> {
+        if self.waiting_approval.iter().any(|re| re.is_match(pane)) {
+            return Some(WaitKind::Approval);
+        }
+        if self.waiting_menu.iter().any(|re| re.is_match(pane)) {
+            return Some(WaitKind::Menu);
+        }
+        if self.waiting_input.iter().any(|re| re.is_match(pane)) {
+            return Some(WaitKind::Input);
+        }
+        None
     }
 }
 

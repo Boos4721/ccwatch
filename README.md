@@ -8,7 +8,8 @@ Why: when you run several cc/codex sessions at once, you don't want to keep manu
 
 - Pure Rust, single binary, zero runtime dependencies.
 - Config-driven: add a new agent = add one `[[profiles]]` block, no code change.
-- Three modes: `once` (for cron) / `daemon` (resident, self-delivering) / `check` (debug).
+- Dual-track: **screen** (tmux pane scraping, zero-intrusion) or **protocol** (drive the agent over ACP/MCP and read authoritative state). `auto` prefers protocol and falls back to screen.
+- Three modes: `once` (for cron) / `daemon` (resident, self-delivering) / `check` (debug), plus `status` (one-screen overview) and `say` (send a message into a session).
 
 ## Build
 
@@ -80,12 +81,41 @@ For each matching tmux session:
 | Transition | Report | Switch |
 |------|------|------|
 | working/waiting/unknown → idle | `✅ <session> done, idle` | `notify_done` |
-| any → waiting | `⏸ <session> stuck, waiting on you` | `notify_waiting` |
+| any → waiting | `⏸ <session> stuck, waiting on you` (with subtype, see below) | `notify_waiting` |
 | idle/waiting → working | `▶ <session> started` (off by default) | `notify_working` |
 | session gone | `⚫ <session> session ended` | `notify_gone` |
 | new session, first seen already waiting | `⏸ <session> waiting on you from the start` | `notify_new_waiting` |
+| working but content unchanged > `stuck_threshold_secs` | `⚠ <session> looks stuck (Nm no change)` | `notify_stuck` |
 
 Reports carry one line of context: for waiting, grabs the last menu/question line; for idle, grabs the most recent `●`/`✻`/`✔` summary line; truncated to ~120 chars.
+
+### Waiting subtypes
+
+`waiting` is refined into a subtype so the report says **what** it's waiting for:
+
+- `approval` — waiting on a y/n approval (e.g. a bypass-permissions / trust prompt).
+- `input` — waiting on free-text input.
+- `menu` — waiting on a menu / arrow-key choice.
+
+Screen mode detects subtypes via optional per-profile regexes (`waiting_approval` / `waiting_input` / `waiting_menu`, priority approval > menu > input); protocol mode maps event types (e.g. Codex `*_approval_request` → `approval`). If no subtype regex matches, the report falls back to the generic wording.
+
+### Stuck detection
+
+A session that sits in `working` while actually hung (waiting on input that never comes, a loop, a network stall) never transitions, so it would never be reported. ccwatch flags it: when the pane content (with digits stripped, so spinners/timers don't count as progress) stays unchanged for longer than `stuck_threshold_secs` (default 600), it reports `⚠ looks stuck` once. Real progress (or leaving `working`) resets the timer, so a later stall reports again.
+
+## Tracks and modes
+
+Both `once` and `daemon` take `--mode screen|protocol|auto`:
+
+- `screen` (default) — scrape tmux panes. Zero-intrusion: watches sessions you're already running by hand.
+- `protocol` — ccwatch spawns the agent itself as an ACP/MCP client and reads authoritative state events (currently Codex via `codex mcp-server`). Both tracks funnel through the **same** transition rules and delivery path.
+- `auto` — use protocol if available (e.g. `codex` on PATH), otherwise fall back to screen. In `daemon`, a protocol runtime error also falls back to the screen loop.
+
+```bash
+ccwatch daemon --mode auto                       # prefer protocol, fall back to screen
+ccwatch daemon --mode protocol --agent codex     # resident protocol watch
+ccwatch once --mode protocol --label codex-a --prompt "..."
+```
 
 ## Adding a new agent profile
 

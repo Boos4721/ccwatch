@@ -10,17 +10,35 @@ pub fn format_event(ev: &Event) -> String {
         Event::Done { session, context } => {
             with_ctx(format!("✅ {} 干完了,空闲待命", session), context)
         }
-        Event::Waiting { session, context } => {
-            with_ctx(format!("⏸ {} 卡住了,在等你拍板", session), context)
-        }
-        Event::NewWaiting { session, context } => {
-            with_ctx(format!("⏸ {} 一上来就在等你拍板", session), context)
-        }
+        Event::Waiting {
+            session,
+            context,
+            kind,
+        } => with_ctx(format!("⏸ {} 卡住了,{}", session, wait_phrase(kind)), context),
+        Event::NewWaiting {
+            session,
+            context,
+            kind,
+        } => with_ctx(
+            format!("⏸ {} 一上来就{}", session, wait_phrase(kind)),
+            context,
+        ),
         Event::Working { session } => format!("▶ {} 开始干了", session),
         Event::Gone { session } => format!("⚫ {} 会话已结束", session),
         Event::Stuck { session, secs } => {
             format!("⚠ {} 疑似卡住了(已 {} 无变化)", session, fmt_duration(*secs))
         }
+    }
+}
+
+/// waiting 子类型 → 播报短语。未知子类型回退到通用「在等你拍板」。
+fn wait_phrase(kind: &Option<crate::classify::WaitKind>) -> &'static str {
+    use crate::classify::WaitKind;
+    match kind {
+        Some(WaitKind::Approval) => "在等你审批(y/n)",
+        Some(WaitKind::Input) => "在等你输入",
+        Some(WaitKind::Menu) => "在等你选择",
+        None => "在等你拍板",
     }
 }
 
