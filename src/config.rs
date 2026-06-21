@@ -127,6 +127,15 @@ pub struct Transitions {
     /// 疑似卡住(working 持续无变化超阈值)。
     #[serde(default = "default_true")]
     pub notify_stuck: bool,
+    /// 转移触发的 shell 命令(可选)。注入 CCWATCH_SESSION/STATE/CONTEXT。
+    #[serde(default)]
+    pub on_done_cmd: Option<String>,
+    #[serde(default)]
+    pub on_waiting_cmd: Option<String>,
+    #[serde(default)]
+    pub on_working_cmd: Option<String>,
+    #[serde(default)]
+    pub on_stuck_cmd: Option<String>,
 }
 
 impl Default for Transitions {
@@ -138,6 +147,10 @@ impl Default for Transitions {
             notify_gone: true,
             notify_new_waiting: true,
             notify_stuck: true,
+            on_done_cmd: None,
+            on_waiting_cmd: None,
+            on_working_cmd: None,
+            on_stuck_cmd: None,
         }
     }
 }

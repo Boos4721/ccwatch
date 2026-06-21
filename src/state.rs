@@ -103,6 +103,27 @@ impl Event {
             | Event::Stuck { session, .. } => session,
         }
     }
+
+    /// 给 hook 注入用的状态名。
+    pub fn state_name(&self) -> &'static str {
+        match self {
+            Event::Done { .. } => "idle",
+            Event::Waiting { .. } | Event::NewWaiting { .. } => "waiting",
+            Event::Working { .. } => "working",
+            Event::Gone { .. } => "gone",
+            Event::Stuck { .. } => "stuck",
+        }
+    }
+
+    /// 给 hook 注入用的 context(无 context 的事件返回 None)。
+    pub fn context(&self) -> Option<&str> {
+        match self {
+            Event::Done { context, .. }
+            | Event::Waiting { context, .. }
+            | Event::NewWaiting { context, .. } => context.as_deref(),
+            Event::Working { .. } | Event::Gone { .. } | Event::Stuck { .. } => None,
+        }
+    }
 }
 
 /// 判定单个会话从 prev 到 cur 的转移,按开关产出事件(可能为 None)。

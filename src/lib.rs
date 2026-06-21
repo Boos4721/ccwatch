@@ -5,6 +5,7 @@ pub mod auto_answer;
 pub mod backend;
 pub mod classify;
 pub mod config;
+pub mod hooks;
 pub mod notify;
 pub mod screen;
 pub mod state;

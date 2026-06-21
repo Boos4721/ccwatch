@@ -6,7 +6,7 @@
 //!   check  列出当前所有匹配会话 + 识别到的状态(调试)。
 
 use anyhow::{Context, Result};
-use ccwatch::{acp, auto_answer, backend, classify, config, notify, state, status, watch};
+use ccwatch::{acp, auto_answer, backend, classify, config, hooks, notify, state, status, watch};
 use clap::{Parser, Subcommand};
 use config::{expand_tilde, Config, EffectiveMode, Mode};
 use std::path::PathBuf;
@@ -285,6 +285,8 @@ async fn run_once_screen(cli_path: Option<PathBuf>) -> Result<()> {
     let notifier = notify::Notifier::from_delivery(&cfg.delivery)?;
     notifier.deliver(&events).await?;
 
+    hooks::run_for_events(&cfg.transitions, &events);
+
     new_store.save(&state_path)?;
     Ok(())
 }
@@ -428,6 +430,7 @@ async fn run_daemon_screen(
                     tracing::warn!("投递失败,本轮不写状态(下轮重试): {}", e);
                     continue;
                 }
+                hooks::run_for_events(&cfg.transitions, &events);
                 if let Err(e) = new_store.save(&state_path) {
                     tracing::warn!("写状态文件失败: {}", e);
                 }
