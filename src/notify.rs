@@ -18,6 +18,22 @@ pub fn format_event(ev: &Event) -> String {
         }
         Event::Working { session } => format!("▶ {} 开始干了", session),
         Event::Gone { session } => format!("⚫ {} 会话已结束", session),
+        Event::Stuck { session, secs } => {
+            format!("⚠ {} 疑似卡住了(已 {} 无变化)", session, fmt_duration(*secs))
+        }
+    }
+}
+
+/// 把秒数格式化成人类可读时长(如 12m / 1h5m)。
+fn fmt_duration(secs: u64) -> String {
+    let m = secs / 60;
+    let h = m / 60;
+    if h > 0 {
+        format!("{}h{}m", h, m % 60)
+    } else if m > 0 {
+        format!("{}m", m)
+    } else {
+        format!("{}s", secs)
     }
 }
 
@@ -114,5 +130,30 @@ impl Notifier {
                 Ok(())
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::Event;
+
+    #[test]
+    fn stuck_event_formats_with_duration() {
+        let ev = Event::Stuck {
+            session: "ccA".to_string(),
+            secs: 720,
+        };
+        let s = format_event(&ev);
+        assert!(s.contains("ccA"));
+        assert!(s.contains("疑似卡住"));
+        assert!(s.contains("12m"), "720s 应渲染成 12m,实际: {}", s);
+    }
+
+    #[test]
+    fn duration_formatting() {
+        assert_eq!(fmt_duration(45), "45s");
+        assert_eq!(fmt_duration(600), "10m");
+        assert_eq!(fmt_duration(3900), "1h5m");
     }
 }

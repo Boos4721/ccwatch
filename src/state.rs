@@ -2,6 +2,7 @@
 
 use crate::classify::State;
 use crate::config::Transitions;
+use crate::stuck::StuckMeta;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -13,6 +14,9 @@ pub struct StateStore {
     /// 会话 -> 上次状态("working"/"waiting"/"idle"/"unknown")。
     #[serde(default)]
     pub sessions: BTreeMap<String, String>,
+    /// 会话 -> 卡住检测元数据(新增,旧状态文件缺这段时默认空,向后兼容)。
+    #[serde(default)]
+    pub stuck: BTreeMap<String, StuckMeta>,
 }
 
 impl StateStore {
@@ -70,6 +74,8 @@ pub enum Event {
         session: String,
         context: Option<String>,
     },
+    /// 疑似卡住:working 但内容持续无变化超过阈值。带已卡秒数。
+    Stuck { session: String, secs: u64 },
 }
 
 impl Event {
@@ -79,7 +85,8 @@ impl Event {
             | Event::Waiting { session, .. }
             | Event::Working { session }
             | Event::Gone { session }
-            | Event::NewWaiting { session, .. } => session,
+            | Event::NewWaiting { session, .. }
+            | Event::Stuck { session, .. } => session,
         }
     }
 }
@@ -158,6 +165,8 @@ pub fn detect_transition(
 pub struct TransitionTracker {
     transitions: Transitions,
     last: BTreeMap<String, State>,
+    /// 卡住元数据(从磁盘带入、原样带出;协议轨道卡住检测后续接入由此承载)。
+    stuck: BTreeMap<String, StuckMeta>,
 }
 
 impl TransitionTracker {
@@ -166,6 +175,7 @@ impl TransitionTracker {
         TransitionTracker {
             transitions,
             last: BTreeMap::new(),
+            stuck: BTreeMap::new(),
         }
     }
 
@@ -176,7 +186,11 @@ impl TransitionTracker {
             .iter()
             .map(|(k, v)| (k.clone(), State::from_str(v)))
             .collect();
-        TransitionTracker { transitions, last }
+        TransitionTracker {
+            transitions,
+            last,
+            stuck: store.stuck.clone(),
+        }
     }
 
     /// 喂入某会话的当前观测状态,返回该走播报的转移事件(可能为 None)。
@@ -194,6 +208,7 @@ impl TransitionTracker {
     }
 
     /// 导出当前状态为可持久化的 [`StateStore`](写回磁盘用)。
+    /// 保留传入的卡住元数据(协议轨道的卡住检测后续接入时由此承载)。
     pub fn to_store(&self) -> StateStore {
         StateStore {
             sessions: self
@@ -201,6 +216,7 @@ impl TransitionTracker {
                 .iter()
                 .map(|(k, v)| (k.clone(), v.as_str().to_string()))
                 .collect(),
+            stuck: self.stuck.clone(),
         }
     }
 }

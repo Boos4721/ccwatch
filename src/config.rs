@@ -34,6 +34,9 @@ pub struct General {
     /// 状态文件路径(支持 `~` 展开)。
     #[serde(default = "default_state_file")]
     pub state_file: String,
+    /// 「卡住」阈值(秒):working 但内容持续无变化超过此值即疑似卡住。
+    #[serde(default = "default_stuck_threshold")]
+    pub stuck_threshold_secs: u64,
 }
 
 impl Default for General {
@@ -43,6 +46,7 @@ impl Default for General {
             capture_lines: default_capture_lines(),
             poll_interval_secs: default_poll_interval(),
             state_file: default_state_file(),
+            stuck_threshold_secs: default_stuck_threshold(),
         }
     }
 }
@@ -55,6 +59,9 @@ fn default_poll_interval() -> u64 {
 }
 fn default_state_file() -> String {
     "~/.config/ccwatch/state.json".to_string()
+}
+fn default_stuck_threshold() -> u64 {
+    600
 }
 
 /// 投递方式。
@@ -101,6 +108,9 @@ pub struct Transitions {
     /// 新会话首次见到且已是 waiting。
     #[serde(default = "default_true")]
     pub notify_new_waiting: bool,
+    /// 疑似卡住(working 持续无变化超阈值)。
+    #[serde(default = "default_true")]
+    pub notify_stuck: bool,
 }
 
 impl Default for Transitions {
@@ -111,6 +121,7 @@ impl Default for Transitions {
             notify_working: false,
             notify_gone: true,
             notify_new_waiting: true,
+            notify_stuck: true,
         }
     }
 }

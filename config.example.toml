@@ -19,6 +19,9 @@ capture_lines = 60
 poll_interval_secs = 30
 # 状态文件路径(记录上次每个会话的状态,用于检测转移)
 state_file = "~/.config/ccwatch/state.json"
+# 「卡住」阈值(秒):一个会话处于 working 但 pane 内容(剥掉计时器/spinner 数字后)
+# 持续无变化超过此值,即播报一次「疑似卡住」(默认 600 = 10 分钟)
+stuck_threshold_secs = 600
 
 # ---- 投递(daemon 模式自投递;once 模式只打印 stdout 给 Hermes cron) ----
 [delivery]
@@ -42,6 +45,8 @@ notify_working = false
 notify_gone = true
 # 新会话首次见到且已是 waiting
 notify_new_waiting = true
+# 疑似卡住(working 持续无变化超过 stuck_threshold_secs)
+notify_stuck = true
 
 # ==========================================================================
 # Agent Profiles —— 真实 pane 特征(2026-06 实测 claude/codex/gemini 抓取)
