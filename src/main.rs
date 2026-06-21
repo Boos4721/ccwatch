@@ -8,7 +8,7 @@
 use anyhow::{Context, Result};
 use ccwatch::{acp, classify, config, notify, state, watch};
 use clap::{Parser, Subcommand};
-use config::{expand_tilde, Config};
+use config::{expand_tilde, Config, EffectiveMode, Mode};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -30,7 +30,29 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// 跑一遍,转移事件打印到 stdout(给 cron;无转移则静默)。
-    Once,
+    Once {
+        /// 运行轨道:screen(抓屏)/ protocol(协议)/ auto(优先协议,回退抓屏)。
+        #[arg(long, default_value = "screen")]
+        mode: String,
+        /// 协议模式目标 agent(当前支持:codex)。
+        #[arg(long, default_value = "codex")]
+        agent: String,
+        /// 协议模式:发给 agent 的 prompt。
+        #[arg(long, default_value = "what is 2+2? reply with one word")]
+        prompt: String,
+        /// 协议模式:会话标签(播报里的 session 名;默认用 agent 名)。
+        #[arg(long)]
+        label: Option<String>,
+        /// 协议模式:整体超时(秒)。
+        #[arg(long, default_value_t = 90)]
+        timeout: u64,
+        /// 协议模式:codex 审批策略。
+        #[arg(long, default_value = "never")]
+        approval_policy: String,
+        /// 协议模式:codex sandbox。
+        #[arg(long, default_value = "read-only")]
+        sandbox: String,
+    },
     /// 常驻循环,按间隔轮询并自投递。
     Daemon {
         /// 覆盖配置里的轮询间隔(秒)。
@@ -100,7 +122,27 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Once => run_once(cli.config).await,
+        Commands::Once {
+            mode,
+            agent,
+            prompt,
+            label,
+            timeout,
+            approval_policy,
+            sandbox,
+        } => {
+            run_once(
+                cli.config,
+                &mode,
+                &agent,
+                &prompt,
+                label.as_deref(),
+                timeout,
+                &approval_policy,
+                &sandbox,
+            )
+            .await
+        }
         Commands::Daemon { interval } => run_daemon(cli.config, interval).await,
         Commands::Check => run_check(cli.config),
         Commands::AcpProbe {
@@ -113,8 +155,50 @@ async fn main() -> Result<()> {
     }
 }
 
-/// once:扫描一遍,投递事件,写回状态。
-async fn run_once(cli_path: Option<PathBuf>) -> Result<()> {
+/// once:按 --mode 选轨道,跑一遍,投递转移事件,写回状态。
+/// 两条轨道共用同一套转移规则(state.rs)、Event 类型、Notifier 投递路径。
+#[allow(clippy::too_many_arguments)]
+async fn run_once(
+    cli_path: Option<PathBuf>,
+    mode_str: &str,
+    agent: &str,
+    prompt: &str,
+    label: Option<&str>,
+    timeout_secs: u64,
+    approval_policy: &str,
+    sandbox: &str,
+) -> Result<()> {
+    let mode = Mode::parse(mode_str)?;
+    // auto 择优:协议可用(codex 在 PATH)就走协议,否则抓屏。
+    let protocol_available = agent == "codex" && acp::codex_available();
+    let effective = mode.resolve(protocol_available);
+
+    // 显式 --mode protocol 但协议不可用:直接报错,不偷偷回退。
+    if mode == Mode::Protocol && effective != EffectiveMode::Protocol {
+        anyhow::bail!(
+            "--mode protocol 但协议不可用(agent={agent};codex 在 PATH 上?当前仅支持 codex)"
+        );
+    }
+
+    match effective {
+        EffectiveMode::Screen => run_once_screen(cli_path).await,
+        EffectiveMode::Protocol => {
+            run_once_protocol(
+                cli_path,
+                agent,
+                prompt,
+                label.unwrap_or(agent),
+                timeout_secs,
+                approval_policy,
+                sandbox,
+            )
+            .await
+        }
+    }
+}
+
+/// 抓屏轨道:扫描一遍,投递事件,写回状态。(原行为,保持不变。)
+async fn run_once_screen(cli_path: Option<PathBuf>) -> Result<()> {
     let (cfg, classifier) = load(cli_path)?;
     let state_path = cfg.state_file_path();
     let prev = state::StateStore::load(&state_path)?;
@@ -125,6 +209,59 @@ async fn run_once(cli_path: Option<PathBuf>) -> Result<()> {
     notifier.deliver(&events).await?;
 
     new_store.save(&state_path)?;
+    Ok(())
+}
+
+/// 协议轨道:拉起 agent 跑一个 turn,把权威状态流经**同一套** TransitionTracker
+/// (复用 detect_transition 规则)→ Event → Notifier 投递,并写回同一个状态文件。
+#[allow(clippy::too_many_arguments)]
+async fn run_once_protocol(
+    cli_path: Option<PathBuf>,
+    agent: &str,
+    prompt: &str,
+    label: &str,
+    timeout_secs: u64,
+    approval_policy: &str,
+    sandbox: &str,
+) -> Result<()> {
+    if agent != "codex" {
+        anyhow::bail!(
+            "协议轨道当前只实现了 codex;gemini/claude 见 docs/ACP_RESEARCH.md,后续接入。"
+        );
+    }
+    let cfg = {
+        let path = resolve_config_path(cli_path)?;
+        Config::load(&path)?
+    };
+    let state_path = cfg.state_file_path();
+    let prev = state::StateStore::load(&state_path)?;
+    // 用磁盘状态初始化追踪器:协议轨道也能跨进程接上上次状态。
+    let mut tracker = state::TransitionTracker::from_store(cfg.transitions.clone(), &prev);
+    let notifier = notify::Notifier::from_delivery(&cfg.delivery)?;
+
+    let mut client = acp::CodexClient::spawn(None).context("拉起 codex mcp-server 失败")?;
+
+    // run_turn 的回调是同步的;在回调里只收集事件,turn 结束后统一异步投递。
+    let mut events: Vec<state::Event> = Vec::new();
+    client
+        .run_turn(
+            prompt,
+            approval_policy,
+            sandbox,
+            Duration::from_secs(timeout_secs),
+            |ev| {
+                if let Some(sig) = ev.signal {
+                    if let Some(event) = tracker.observe(label, sig.state, sig.context) {
+                        events.push(event);
+                    }
+                }
+            },
+        )
+        .await?;
+    client.shutdown().await;
+
+    notifier.deliver(&events).await?;
+    tracker.to_store().save(&state_path)?;
     Ok(())
 }
 
