@@ -11,12 +11,41 @@
 - 双轨:**抓屏**(tmux pane 正则,零侵入)或**协议**(以 ACP/MCP 拉起 agent 读权威状态)。`auto` 优先协议、不可用回退抓屏。
 - 三模式:`once`(给 cron)/ `daemon`(常驻自投递)/ `check`(调试),外加 `status`(一屏总览)和 `say`(往会话发消息)。
 
-## 构建
+## 安装
+
+### 预编译二进制（v0.5.0）
+
+从 [GitHub Releases](https://github.com/Boos4721/ccwatch/releases) 下载对应平台的
+单二进制压缩包，解开后把 `ccwatch` 放进 `PATH`：
+
+| 平台 | 文件 |
+|------|------|
+| Linux x86_64 | `ccwatch-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux aarch64 | `ccwatch-aarch64-unknown-linux-gnu.tar.gz` |
+| macOS x86_64（Intel） | `ccwatch-x86_64-apple-darwin.tar.gz` |
+| macOS aarch64（Apple Silicon） | `ccwatch-aarch64-apple-darwin.tar.gz` |
+
+```bash
+# 例：Linux x86_64
+curl -L -O https://github.com/Boos4721/ccwatch/releases/latest/download/ccwatch-x86_64-unknown-linux-gnu.tar.gz
+tar -xzf ccwatch-x86_64-unknown-linux-gnu.tar.gz
+install -m755 ccwatch ~/.local/bin/ccwatch   # 或放到任意 PATH 目录
+ccwatch --help
+```
+
+每个压缩包里只有一个文件：`ccwatch` 二进制（纯 Rust，零运行时依赖）。
+
+### 从源码构建
 
 ```bash
 cargo build --release
 # 产物：target/release/ccwatch（单二进制）
+
+# 或直接从 git 装到 PATH：
+cargo install --git https://github.com/Boos4721/ccwatch
 ```
+
+Release 由 `.github/workflows/release.yml` 在每个 `v*` tag 上自动构建。发布到 crates.io 是 TODO。
 
 ## 配置
 
@@ -35,6 +64,51 @@ cp config.example.toml ~/.config/ccwatch/config.toml
 - `[delivery]` — `none`（只打印 stdout）或 `telegram`（填 `bot_token` / `chat_id`，可选 `proxy`）。
 - `[transitions]` — 哪些转移要播报的开关。
 - `[[profiles]]` — 每个 agent 的 pane 特征正则。
+
+## 实战用例：盯一队 agent，状态变化推 Telegram
+
+ccwatch 就是为这个场景做的：同时开着好几个 `cc` / `codex` 会话并行干活，又不想
+一直盯着。挂一个常驻 `daemon`，它**只在某个会话状态发生转移时**推一条 Telegram——
+干完了、卡住了、或在等你审批——所以没消息就代表「还在干」。
+
+每个 agent 各开一个 tmux 会话（名字匹配 `session_prefixes`）：
+
+```bash
+tmux new -ds ccA   # 然后在里面跑 `claude`
+tmux new -ds ccB
+tmux new -ds codex-1
+```
+
+直连 Telegram 的最小 `~/.config/ccwatch/config.toml`：
+
+```toml
+[general]
+session_prefixes = ["cc", "codex"]   # 监控 ccA、ccB、codex-1……
+poll_interval_secs = 30
+state_file = "~/.config/ccwatch/state.json"
+
+[delivery]
+mode = "telegram"
+bot_token = "123456:ABC-你的-bot-token"
+chat_id = "7435622194"
+# proxy = "http://proxy.kto:7890"    # 可选；国内访问 Telegram 需要
+
+[transitions]
+notify_done = true          # ✅ 会话干完，转 idle
+notify_waiting = true       # ⏸ 会话在等你（审批/输入/菜单）
+notify_stuck = true         # ⚠ working 但超过 stuck_threshold_secs 冻住
+notify_working = false      # ▶ 开始干——通常太吵，关掉
+```
+
+然后让它常驻跑着（tmux / systemd / `nohup` 均可）：
+
+```bash
+ccwatch daemon              # 按 poll_interval_secs 轮询，投递到 Telegram
+```
+
+你会收到类似 `✅ ccA 干完了，空闲待命`、`⏸ codex-1 卡住了，在等你…（approval）`、
+`⚠ ccB 疑似卡住了（已 12m 无变化）` 的消息，每条带一句上下文。首轮只建基线（不刷屏），
+投递失败时本轮不写状态文件、下一轮自动重试（不漏报）。
 
 ## 三种模式
 
@@ -205,18 +279,6 @@ idle = ["(?m)^>\\s*$"]
 
 `[orchestration]`(默认禁用)+ `ccwatch dispatch`:空闲会话从队列(内联 `task_queue`
 或 `queue_file`)领下一条任务,经 backend 投递。只投给 `session_match` 命中的 idle 会话。
-
-## 安装
-
-从 [GitHub Releases](https://github.com/Boos4721/ccwatch/releases) 下载预编译二进制
-(Linux x86_64/aarch64、macOS x86_64/aarch64),或从源码装:
-
-```bash
-cargo install --git https://github.com/Boos4721/ccwatch
-```
-
-Release 由 `.github/workflows/release.yml` 在每个 `v*` tag 上自动构建。
-发布到 crates.io 是 TODO。
 
 ## 挂 Hermes / cron
 

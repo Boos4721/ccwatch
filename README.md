@@ -11,12 +11,42 @@ Why: when you run several cc/codex sessions at once, you don't want to keep manu
 - Dual-track: **screen** (tmux pane scraping, zero-intrusion) or **protocol** (drive the agent over ACP/MCP and read authoritative state). `auto` prefers protocol and falls back to screen.
 - Three modes: `once` (for cron) / `daemon` (resident, self-delivering) / `check` (debug), plus `status` (one-screen overview) and `say` (send a message into a session).
 
-## Build
+## Install
+
+### Prebuilt binaries (v0.5.0)
+
+Download a single-binary archive for your platform from
+[GitHub Releases](https://github.com/Boos4721/ccwatch/releases), unpack it, and
+drop `ccwatch` on your `PATH`:
+
+| Platform | Asset |
+|----------|-------|
+| Linux x86_64 | `ccwatch-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux aarch64 | `ccwatch-aarch64-unknown-linux-gnu.tar.gz` |
+| macOS x86_64 (Intel) | `ccwatch-x86_64-apple-darwin.tar.gz` |
+| macOS aarch64 (Apple Silicon) | `ccwatch-aarch64-apple-darwin.tar.gz` |
+
+```bash
+# example: Linux x86_64
+curl -L -O https://github.com/Boos4721/ccwatch/releases/latest/download/ccwatch-x86_64-unknown-linux-gnu.tar.gz
+tar -xzf ccwatch-x86_64-unknown-linux-gnu.tar.gz
+install -m755 ccwatch ~/.local/bin/ccwatch   # or anywhere on PATH
+ccwatch --help
+```
+
+Each archive contains exactly one file: the `ccwatch` binary (pure Rust, zero runtime deps).
+
+### Build from source
 
 ```bash
 cargo build --release
 # Output: target/release/ccwatch (single binary)
+
+# or install straight from git onto your PATH:
+cargo install --git https://github.com/Boos4721/ccwatch
 ```
+
+Releases are built by `.github/workflows/release.yml` on every `v*` tag. Publishing to crates.io is a TODO.
 
 ## Configure
 
@@ -35,6 +65,54 @@ See `config.example.toml` comments for details. Summary:
 - `[delivery]` — `none` (print to stdout only) or `telegram` (set `bot_token` / `chat_id`, optional `proxy`).
 - `[transitions]` — switches for which transitions to report.
 - `[[profiles]]` — per-agent pane-feature regexes.
+
+## Use case: watch a fleet of agents, get pinged on Telegram
+
+The setup ccwatch was built for: you have several `cc` / `codex` sessions
+running in parallel and you don't want to babysit them. Run one resident
+`daemon` and it pushes a Telegram message **only when a session changes state** —
+finished, stuck, or waiting on your approval — so silence means "still working."
+
+Start each agent in its own tmux session (names matching `session_prefixes`):
+
+```bash
+tmux new -ds ccA   # then run `claude` inside it
+tmux new -ds ccB
+tmux new -ds codex-1
+```
+
+Minimal `~/.config/ccwatch/config.toml` for Telegram delivery:
+
+```toml
+[general]
+session_prefixes = ["cc", "codex"]   # watch ccA, ccB, codex-1, ...
+poll_interval_secs = 30
+state_file = "~/.config/ccwatch/state.json"
+
+[delivery]
+mode = "telegram"
+bot_token = "123456:ABC-your-bot-token"
+chat_id = "7435622194"
+# proxy = "http://proxy.kto:7890"    # optional, if Telegram is blocked locally
+
+[transitions]
+notify_done = true          # ✅ session finished, went idle
+notify_waiting = true       # ⏸ session is waiting on you (approval/input/menu)
+notify_stuck = true         # ⚠ working but frozen past stuck_threshold_secs
+notify_working = false      # ▶ started — usually too noisy, keep off
+```
+
+Then leave it running (under tmux, systemd, or `nohup`):
+
+```bash
+ccwatch daemon              # poll every poll_interval_secs, deliver to Telegram
+```
+
+You'll get messages like `✅ ccA done, idle`, `⏸ codex-1 stuck, waiting on you
+(approval)`, or `⚠ ccB looks stuck (12m no change)` — each with one line of
+context. The first poll only builds a baseline (no spam), and on a delivery
+failure the round's state isn't saved so the next round retries (no missed
+reports).
 
 ## Three modes
 
@@ -209,18 +287,6 @@ backend. All rules are disabled unless `enabled = true`; rules may be scoped to 
 `[orchestration]` (disabled by default) plus `ccwatch dispatch` lets idle sessions
 pull the next task off a queue (`task_queue` inline or `queue_file`), sent via the
 backend. Only idle sessions matching `session_match` are targeted.
-
-## Install
-
-Download a prebuilt binary from [GitHub Releases](https://github.com/Boos4721/ccwatch/releases)
-(Linux x86_64/aarch64, macOS x86_64/aarch64), or build from source:
-
-```bash
-cargo install --git https://github.com/Boos4721/ccwatch
-```
-
-Releases are built by `.github/workflows/release.yml` on every `v*` tag.
-Publishing to crates.io is a TODO.
 
 ## Hooking into Hermes / cron
 
